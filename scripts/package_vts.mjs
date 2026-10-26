@@ -80,20 +80,23 @@ async function safeSourceFile(root, reference) {
   return actual;
 }
 
-function validateMotion(motion, model, motionPath) {
+function validateMotion(motion, parameterIds, motionPath) {
   const meta = motion?.Meta;
   if (!meta || typeof meta !== 'object' || !Array.isArray(motion.Curves)) throw new Error(`Invalid motion3 structure: ${motionPath}`);
   if (typeof meta.Duration !== 'number' || !Number.isFinite(meta.Duration) || meta.Duration <= 0) throw new Error(`Motion Duration must be positive: ${motionPath}`);
   if (typeof meta.Fps !== 'number' || !Number.isFinite(meta.Fps) || meta.Fps <= 0 || meta.Fps > 240) throw new Error(`Motion Fps must be in (0, 240]: ${motionPath}`);
   if (meta.Loop !== true) throw new Error(`Idle motion must declare Meta.Loop=true: ${motionPath}`);
   if (meta.CurveCount !== motion.Curves.length) throw new Error(`Motion CurveCount does not match Curves: ${motionPath}`);
-  if (!Array.isArray(model?.Parameters)) throw new Error('model3 Parameters array is required to validate motion IDs.');
-  const parameterIds = new Set(model.Parameters.map((p) => p.Id).filter((id) => typeof id === 'string'));
   for (const [index, curve] of motion.Curves.entries()) {
     if (!['Parameter', 'PartOpacity'].includes(curve?.Target) || typeof curve.Id !== 'string' || !Array.isArray(curve.Segments)) {
       throw new Error(`Invalid motion curve at index ${index}: ${motionPath}`);
     }
-    if (curve.Target === 'Parameter' && !parameterIds.has(curve.Id)) throw new Error(`Motion references unknown parameter ${curve.Id}: ${motionPath}`);
+    if (curve.Target === 'Parameter') {
+      if (!parameterIds) {
+        throw new Error('Cannot validate motion parameter IDs: export-status.json.parameterIds or referenced CDI3 Parameters[].Id metadata is required.');
+      }
+      if (!parameterIds.has(curve.Id)) throw new Error(`Motion references unknown parameter ${curve.Id}: ${motionPath}`);
+    }
     if (curve.Segments.length < 2 || curve.Segments.some((n) => typeof n !== 'number' || !Number.isFinite(n))) {
       throw new Error(`Invalid curve segment data at index ${index}: ${motionPath}`);
     }
@@ -114,6 +117,26 @@ function validateMotion(motion, model, motionPath) {
   for (const key of ['TotalSegmentCount', 'TotalPointCount']) {
     if (meta[key] != null && (!Number.isFinite(meta[key]) || meta[key] < 0)) throw new Error(`Invalid ${key}: ${motionPath}`);
   }
+}
+
+async function readParameterIds(sourceRoot, status, model) {
+  const ids = new Set();
+  const statusIds = status?.parameterIds;
+  if (Array.isArray(statusIds)) {
+    for (const id of statusIds) if (typeof id === 'string' && id) ids.add(id);
+  } else if (statusIds && typeof statusIds === 'object') {
+    for (const id of Object.values(statusIds)) if (typeof id === 'string' && id) ids.add(id);
+  }
+
+  const displayInfo = model?.FileReferences?.DisplayInfo;
+  if (typeof displayInfo === 'string' && displayInfo.toLowerCase().endsWith('.cdi3.json')) {
+    const cdiPath = await safeSourceFile(sourceRoot, displayInfo);
+    const cdi = await readJson(cdiPath);
+    for (const entry of cdi?.Parameters ?? []) {
+      if (typeof entry?.Id === 'string' && entry.Id) ids.add(entry.Id);
+    }
+  }
+  return ids.size ? ids : null;
 }
 
 async function copyAsset(sourcePath, outputRoot, relativeName) {
@@ -150,6 +173,7 @@ export async function packageVts(options) {
   try { status = await readJson(statusPath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const meta = exportMetadata(status);
   const references = gatherReferences(model);
+  const parameterIds = await readParameterIds(sourceRoot, status, model);
   const fingerprint = createHash('sha256');
   fingerprint.update('VTuberTailor-runtime-export-v1\0');
   fingerprint.update('model.model3.json\0');
@@ -207,7 +231,7 @@ export async function packageVts(options) {
       if (!motionPath) return;
       const bytes = await readFile(resolve(motionPath));
       const motion = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
-      validateMotion(motion, model, motionPath);
+      validateMotion(motion, parameterIds, motionPath);
       const packageName = flag === '--idle' ? 'idle.motion3.json' : 'idle-lost.motion3.json';
       files.push(await copyAsset(resolve(motionPath), outputRoot, packageName));
       const presetReference = flag === '--idle' ? 'IdleAnimation' : 'IdleAnimationWhenTrackingLost';

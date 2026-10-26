@@ -27,6 +27,7 @@ try {
   await mkdir(options.output, { recursive: true });
   const result = await measureProjectPerformance({
     projectDirectory: options.project,
+    evidenceDirectory: options.output,
     ...(options.revision === undefined ? {} : { revision: options.revision }),
     trials: options.trials
   });

@@ -36,3 +36,7 @@ Copyright (c) 2026 CheshireMew（PuppetLoom 原始碼）。VTuberTailor 保留 A
 VTuberTailor 額外可攜性修正：exporter bootstrap 預設使用專案內 cache 與 JAVA_HOME／PATH，移除原作者電腦的 D 槽 Java、Gradle、PSD2Live 工具目錄探測。CLI --java/--cache/--libs/--compiler 仍可明確指定。
 
 預覽效能與錄影證據的獨立 profile 改用包裝器指定的專案 runtime 目錄，未指定時使用系統 temp，移除固定 D 槽 profile 依賴；不調整任何效能／幾何／安全門檻。Windows artifact root 由wrapper依原路徑預算選短路徑。
+
+效能工具會保存既有 motion sampling 擷取的三張 canvas PNG 與 SHA-256，方便檢查實際預覽的圖層；寫檔發生於正式幀率測量與暖機之前，不變更測量門檻。畫面是引擎預覽，不是 VTube Studio。
+
+CLI 工作區 helper 讀取子程序 stdout/stderr 時使用 UTF-8 stream decoder，並等 `close` 確認輸出排空後才解析 JSON；無效輸出的診斷摘要有長度上限並遮蔽常見憑證欄位。以 mock child process 測試 exit/close 時序、跨 chunk 中文和非零退出碼，不涉及 GUI 或門檻變更。

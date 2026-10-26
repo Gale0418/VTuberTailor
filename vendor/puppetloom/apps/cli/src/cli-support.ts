@@ -160,10 +160,12 @@ export async function runWorkspaceTool(scriptName: string, arguments_: string[])
     const child = spawn(process.execPath, [scriptPath, ...arguments_], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
     child.once("error", rejectChild);
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       if (code !== 0) {
         rejectChild(new PuppetLoomError("IO_ERROR", stderr.trim() || `${scriptName} 退出，代码 ${code ?? "unknown"}。`));
         return;
@@ -171,10 +173,19 @@ export async function runWorkspaceTool(scriptName: string, arguments_: string[])
       try {
         resolveChild(JSON.parse(stdout));
       } catch (error) {
-        rejectChild(new PuppetLoomError("IO_ERROR", `${scriptName} 没有返回有效 JSON。`, { cause: error }));
+        const summary = summarizeWorkspaceStdout(stdout);
+        rejectChild(new PuppetLoomError("IO_ERROR", `${scriptName} 没有返回有效 JSON。stdout 摘要：${summary}`, { cause: error }));
       }
     });
   });
+}
+
+function summarizeWorkspaceStdout(stdout: string): string {
+  const redacted = stdout
+    .replace(/((?:"?(?:[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|ACCESS[_-]?KEY|AUTHORIZATION|COOKIE)[A-Z0-9_]*)"?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1[redacted]")
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1[redacted]");
+  const prefix = redacted.slice(0, 400).trim();
+  return `${stdout.length} 字元；${JSON.stringify(prefix)}${redacted.length > 400 ? "…" : ""}`;
 }
 
 export async function runPhotoshopRepairTool(recipe: string, output: string, showPhotoshop: boolean): Promise<unknown> {

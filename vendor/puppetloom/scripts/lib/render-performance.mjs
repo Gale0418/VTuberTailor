@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { _electron as electron } from "playwright";
@@ -93,6 +93,7 @@ export async function measureProjectPerformance({
   projectDirectory,
   revision,
   trials = 3,
+  evidenceDirectory,
   stabilizationFrames = 180,
   warmupFrames = 60,
   measuredFrames = 240
@@ -157,10 +158,17 @@ export async function measureProjectPerformance({
     });
 
     const motionFrameHashes = [];
+    const motionFrames = [];
     for (let index = 0; index < 3; index += 1) {
       await viewer.waitForTimeout(350);
       const screenshot = await viewer.locator("canvas").screenshot();
-      motionFrameHashes.push(createHash("sha256").update(screenshot).digest("hex"));
+      const sha256 = createHash("sha256").update(screenshot).digest("hex");
+      motionFrameHashes.push(sha256);
+      if (evidenceDirectory) {
+        const filename = `motion-${index + 1}.png`;
+        await writeFile(join(evidenceDirectory, filename), screenshot);
+        motionFrames.push({ filename, sha256 });
+      }
     }
     const motionActivity = { sampledFrames: motionFrameHashes.length, distinctFrames: new Set(motionFrameHashes).size };
 
@@ -217,6 +225,7 @@ export async function measureProjectPerformance({
       },
       webgl,
       motionActivity,
+      motionFrames,
       stabilization,
       active,
       paused,

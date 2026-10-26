@@ -34,11 +34,14 @@ async function fixture(t) {
       Expressions: [{ Name: 'smile', File: 'expressions/smile.exp3.json' }],
       Motions: { Idle: [{ File: 'motions/idle.motion3.json' }] },
     },
-    Parameters: [{ Id: 'ParamAngleX' }, { Id: 'ParamEyeLOpen' }],
   };
   await writeFile(join(exp, 'model.model3.json'), JSON.stringify(model));
   const fingerprint = 'export-fingerprint-fixture-123';
-  await writeFile(join(exp, 'export-status.json'), JSON.stringify({ sourceRevision: 17, sourceFingerprint: fingerprint }));
+  await writeFile(join(exp, 'export-status.json'), JSON.stringify({
+    sourceRevision: 17,
+    sourceFingerprint: fingerprint,
+    parameterIds: { angleX: 'ParamAngleX', eyeLeftOpen: 'ParamEyeLOpen' },
+  }));
   const preset = {
     Version: 3,
     Name: 'Existing user name',
@@ -138,6 +141,34 @@ test('validates supplied idle motion loop, metadata, and parameter ids', async (
   await packageVts({ ...baseOptions(f, output), '--idle': motionPath });
   const model = JSON.parse(await readFile(join(output, 'model.model3.json'), 'utf8'));
   const preset = JSON.parse(await readFile(join(output, 'model.vtube.json'), 'utf8'));
+  assert.equal(Object.hasOwn(model, 'Parameters'), false, 'standard model3 must not be rewritten with a custom Parameters field');
   assert.equal(model.FileReferences.Motions.Idle[0].File, 'motions/idle.motion3.json');
   assert.equal(preset.FileReferences.IdleAnimation, 'idle.motion3.json');
+});
+
+test('rejects an idle curve ID absent from trusted export metadata', async (t) => {
+  const f = await fixture(t);
+  const motionPath = join(f.root, 'unknown-parameter.motion3.json');
+  await writeFile(motionPath, JSON.stringify({
+    Meta: { Duration: 2, Fps: 30, Loop: true, CurveCount: 1, TotalSegmentCount: 1, TotalPointCount: 2 },
+    Curves: [{ Target: 'Parameter', Id: 'ParamInvented', Segments: [0, 0, 0, 1, 1] }],
+  }));
+  await assert.rejects(
+    packageVts({ ...baseOptions(f, join(f.root, 'runtime')), '--idle': motionPath }),
+    /Motion references unknown parameter ParamInvented/,
+  );
+});
+
+test('reports when motion parameter validation metadata is missing', async (t) => {
+  const f = await fixture(t);
+  await writeFile(join(f.exp, 'export-status.json'), JSON.stringify({ sourceRevision: 17, sourceFingerprint: f.fingerprint }));
+  const motionPath = join(f.root, 'motion-without-id-metadata.motion3.json');
+  await writeFile(motionPath, JSON.stringify({
+    Meta: { Duration: 2, Fps: 30, Loop: true, CurveCount: 1, TotalSegmentCount: 1, TotalPointCount: 2 },
+    Curves: [{ Target: 'Parameter', Id: 'ParamAngleX', Segments: [0, 0, 0, 1, 1] }],
+  }));
+  await assert.rejects(
+    packageVts({ ...baseOptions(f, join(f.root, 'runtime')), '--idle': motionPath }),
+    /export-status\.json\.parameterIds or referenced CDI3 Parameters\[\]\.Id metadata is required/,
+  );
 });

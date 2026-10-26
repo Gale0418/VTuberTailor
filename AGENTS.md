@@ -6,4 +6,4 @@
 - 引擎是含修正的 AGPL PuppetLoom snapshot；保留授權、來源與修改標示，變更要更新說明。
 - canonical 角色資料只能經公開 engine CLI/API 更動；不可手改 revision/immutable records 來繞過驗證。
 - 檢查可見材質與相同姿態的真正 Core/atlas 畫面；資料驗證、離線原生圖和 VTS 實機不可混稱。
-- 新／改 helper 執行合成 invariant tests；影響流程時另跑 `smoke`。搬移／刪除依賴目錄前，先封存驗證並隔離舊路徑做實際測試。
+- 新／改 helper 執行合成 invariant tests；影響流程時另跑 `smoke`。刪除舊目錄前保留必要原始碼、素材與成品，隔離舊路徑做實際測試；完整封存依使用者指定的保留範圍進行。

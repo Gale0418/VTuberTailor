@@ -9,14 +9,20 @@ param(
 )
 . (Join-Path $PSScriptRoot 'common.ps1')
 $node = Get-TailorNode -ExplicitPath $NodePath
+$sourceNodeDirectory = Split-Path -Parent $node
 $runtime = Join-Path $script:TailorRoot '.runtime'
 $ownedNode = Join-Path $runtime 'node/node.exe'
 New-Item -ItemType Directory -Path (Split-Path -Parent $ownedNode) -Force | Out-Null
 if ($node -ne $ownedNode) { Copy-Item -LiteralPath $node -Destination $ownedNode -Force }
 $node = $ownedNode
 if (-not $NpmCliPath) {
-    $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
-    if ($npmCommand) { $NpmCliPath = Join-Path (Split-Path -Parent $npmCommand.Source) 'node_modules/npm/bin/npm-cli.js' }
+    $adjacentNpm = Join-Path $sourceNodeDirectory 'node_modules/npm/bin/npm-cli.js'
+    if (Test-Path -LiteralPath $adjacentNpm -PathType Leaf) {
+        $NpmCliPath = $adjacentNpm
+    } else {
+        $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+        if ($npmCommand) { $NpmCliPath = Join-Path (Split-Path -Parent $npmCommand.Source) 'node_modules/npm/bin/npm-cli.js' }
+    }
 }
 $ownedNpm = Join-Path $runtime 'node/node_modules/npm/bin/npm-cli.js'
 if (-not (Test-Path -LiteralPath $ownedNpm)) {

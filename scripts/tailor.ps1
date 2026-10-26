@@ -7,7 +7,7 @@ param(
 if ($Command -eq 'help' -or $Arguments -contains '--help' -and $Command -eq 'setup') {
     Write-Output @'
 VTuberTailor
-  setup [-NodePath <node.exe>] [-PythonPath <python.exe>] [-JavaPath <java.exe>] [-WithExporter]
+  setup [-NodePath <node.exe>] [-NpmCliPath <npm/bin/npm-cli.js>] [-PythonPath <python.exe>] [-JavaPath <java.exe>] [-WithExporter]
   doctor [--forbid-root <retired-folder>] [--json]
   engine <PuppetLoom CLI command and arguments>
   register <assets register arguments>
