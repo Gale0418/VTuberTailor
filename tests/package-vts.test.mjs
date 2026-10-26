@@ -46,7 +46,7 @@ async function fixture(t) {
     Version: 3,
     Name: 'Existing user name',
     ModelID: 'old-model-id',
-    FileReferences: { Model: 'old.model3.json', Icon: 'old-icon.png', IdleAnimation: 'previous.motion3.json' },
+    FileReferences: { Model: 'old.model3.json', Icon: 'old-icon.png', IdleAnimation: 'previous.motion3.json', IdleAnimationWhenTrackingLost: 'previous-lost.motion3.json' },
     ParameterSettings: [{ Input: 'FaceAngleX', Output: 'ParamAngleX', OutputLive2D: 'ParamAngleX', Multiplier: 1.25 }],
     Hotkeys: [{ Name: 'wave', KeyCombination: [1], Function: 'ToggleExpression', ExpressionFile: 'wave.exp3.json' }],
     ModelPosition: { PositionX: 15, PositionY: -8, Size: 0.72 },
@@ -63,6 +63,16 @@ async function fixture(t) {
 
 const baseOptions = (f, output) => ({ '--export': f.exp, '--output': output, '--name': 'New model', '--preset': f.presetPath });
 
+test('optional preset assets never reference uncopied files', async (t) => {
+  const f = await fixture(t);
+  const output = join(f.root, 'runtime');
+  await packageVts(baseOptions(f, output));
+  const preset = JSON.parse(await readFile(join(output, 'model.vtube.json'), 'utf8'));
+  for (const key of ['Icon', 'IdleAnimation', 'IdleAnimationWhenTrackingLost']) {
+    assert.equal(preset.FileReferences[key], '', key);
+  }
+});
+
 test('copies every nested FileReferences dependency and preserves preset settings', async (t) => {
   const f = await fixture(t);
   const output = join(f.root, 'runtime');
@@ -75,8 +85,8 @@ test('copies every nested FileReferences dependency and preserves preset setting
   assert.equal(preset.Name, 'New model');
   assert.notEqual(preset.ModelID, f.preset.ModelID);
   assert.equal(preset.FileReferences.Model, 'model.model3.json');
-  assert.equal(preset.FileReferences.Icon, 'old-icon.png');
-  assert.equal(preset.FileReferences.IdleAnimation, 'previous.motion3.json');
+  assert.equal(preset.FileReferences.Icon, '');
+  assert.equal(preset.FileReferences.IdleAnimation, '');
   assert.deepEqual(preset.ParameterSettings, f.preset.ParameterSettings);
   assert.deepEqual(preset.Hotkeys, f.preset.Hotkeys);
   assert.deepEqual(preset.ModelPosition, f.preset.ModelPosition);
@@ -157,6 +167,23 @@ test('rejects an idle curve ID absent from trusted export metadata', async (t) =
     packageVts({ ...baseOptions(f, join(f.root, 'runtime')), '--idle': motionPath }),
     /Motion references unknown parameter ParamInvented/,
   );
+});
+
+test('supplied optional assets all resolve inside the new package', async (t) => {
+  const f = await fixture(t);
+  const icon = join(f.root, 'provided.png'), motion = join(f.root, 'provided.motion3.json');
+  await writeFile(icon, 'synthetic icon bytes');
+  await writeFile(motion, JSON.stringify({
+    Meta: { Duration: 2, Fps: 30, Loop: true, CurveCount: 1, TotalSegmentCount: 1, TotalPointCount: 2 },
+    Curves: [{ Target: 'Parameter', Id: 'ParamAngleX', Segments: [0, 0, 0, 1, 1] }],
+  }));
+  const output = join(f.root, 'runtime');
+  await packageVts({ ...baseOptions(f, output), '--icon': icon, '--idle': motion, '--idle-lost': motion });
+  const preset = JSON.parse(await readFile(join(output, 'model.vtube.json'), 'utf8'));
+  for (const key of ['Icon', 'IdleAnimation', 'IdleAnimationWhenTrackingLost']) {
+    assert.ok(preset.FileReferences[key]);
+    await readFile(join(output, preset.FileReferences[key]));
+  }
 });
 
 test('reports when motion parameter validation metadata is missing', async (t) => {

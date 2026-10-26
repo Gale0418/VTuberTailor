@@ -280,19 +280,27 @@ export class PuppetRenderer {
 
   private async loadTextures(resolveTexture: TextureResolver): Promise<void> {
     let nextLayer = 0;
+    let failed = false;
+    let firstError: unknown;
     const worker = async (): Promise<void> => {
-      while (nextLayer < this.project.layers.length) {
-        const layer = this.project.layers[nextLayer++]!;
-        const bitmap = await toImageBitmap(await resolveTexture(layer));
-        try {
-          this.createLayerResources(layer, bitmap);
-        } finally {
-          bitmap.close();
+      try {
+        while (!failed && nextLayer < this.project.layers.length) {
+          const layer = this.project.layers[nextLayer++]!;
+          const bitmap = await toImageBitmap(await resolveTexture(layer));
+          try {
+            if (!failed) this.createLayerResources(layer, bitmap);
+          } finally {
+            bitmap.close();
+          }
         }
+      } catch (cause) {
+        if (!failed) firstError = cause;
+        failed = true;
       }
     };
     const concurrency = Math.min(4, this.project.layers.length);
-    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    await Promise.allSettled(Array.from({ length: concurrency }, () => worker()));
+    if (failed) throw firstError;
   }
 
   private createLayerResources(layer: LayerBinding, bitmap: ImageBitmap): void {

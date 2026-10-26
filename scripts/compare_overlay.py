@@ -71,8 +71,8 @@ def compare(source_path, candidate_path, outdir, transform, rois, bg):
     cand_rgb = composite(cand, bg).astype(np.int16)
     diff = np.abs(src_rgb - cand_rgb)
     # Premultiplied delta ignores arbitrary RGB stored under alpha=0.
-    premult = np.abs(src[:, :, :3].astype(np.int16) * src[:, :, 3:4].astype(np.int16) -
-                     cand[:, :, :3].astype(np.int16) * cand[:, :, 3:4].astype(np.int16)) / 255.0
+    premult = np.abs(src[:, :, :3].astype(np.int32) * src[:, :, 3:4].astype(np.int32) -
+                     cand[:, :, :3].astype(np.int32) * cand[:, :, 3:4].astype(np.int32)) / 255.0
     out = Path(outdir)
     out.mkdir(parents=True, exist_ok=True)
     aligned_img.save(out / "aligned.png")

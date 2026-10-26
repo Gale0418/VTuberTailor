@@ -9,7 +9,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
   spawn: spawnMock
 }));
 
-import { runWorkspaceTool } from "../apps/cli/src/cli-support.js";
+import { runPhotoshopRepairTool, runWorkspaceTool } from "../apps/cli/src/cli-support.js";
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough();
@@ -33,8 +33,9 @@ describe("runWorkspaceTool", () => {
 
     child.stdout.write(output.subarray(0, split));
     child.emit("exit", 0);
+    const stdoutEnd = once(child.stdout, "end");
     child.stdout.end(output.subarray(split));
-    await once(child.stdout, "end");
+    await stdoutEnd;
     child.emit("close", 0);
 
     await expect(result).resolves.toEqual({ label: "角色狀態" });
@@ -66,5 +67,39 @@ describe("runWorkspaceTool", () => {
     expect(message).toContain("[redacted]");
     expect(message).not.toContain("do-not-leak");
     expect(message.length).toBeLessThan(600);
+  });
+});
+
+describe("runPhotoshopRepairTool", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("waits for close after exit and decodes split UTF-8 output", async () => {
+    const child = useFakeChild();
+    const result = runPhotoshopRepairTool("recipe.json", "output", false);
+    const output = Buffer.from(`${JSON.stringify({ status: "完成", file: "角色.psd" })}\n`, "utf8");
+    const split = output.indexOf(Buffer.from("角", "utf8")) + 1;
+
+    child.stdout.write(output.subarray(0, split));
+    child.emit("exit", 0);
+    const stdoutEnd = once(child.stdout, "end");
+    child.stdout.end(output.subarray(split));
+    await stdoutEnd;
+    child.emit("close", 0);
+
+    await expect(result).resolves.toEqual({ status: "完成", file: "角色.psd" });
+  });
+
+  it("preserves the helper error payload on a nonzero close", async () => {
+    const child = useFakeChild();
+    const result = runPhotoshopRepairTool("recipe.json", "output", false);
+    const stdoutEnd = once(child.stdout, "end");
+    const stderrEnd = once(child.stderr, "end");
+    child.stderr.end("Photoshop helper failed");
+    child.stdout.end();
+    await Promise.all([stdoutEnd, stderrEnd]);
+    child.emit("exit", 9);
+    child.emit("close", 9);
+
+    await expect(result).rejects.toThrow("Photoshop helper failed");
   });
 });

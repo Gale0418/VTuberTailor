@@ -97,7 +97,8 @@ def inspect(path, roi=None, source=None):
         c = np.asarray(image).astype(np.int16)
         outside = (s[:, :, 3] == 0) & (c[:, :, 3] == 0)
         # RGB under fully transparent pixels has no visible contribution.
-        premult_delta = np.abs(s[:, :, :3] * s[:, :, 3:4] - c[:, :, :3] * c[:, :, 3:4]) / 255.0
+        premult_delta = np.abs(s[:, :, :3].astype(np.int32) * s[:, :, 3:4].astype(np.int32) -
+                               c[:, :, :3].astype(np.int32) * c[:, :, 3:4].astype(np.int32)) / 255.0
         result["source_comparison_same_frame"] = {
             "source_path": str(Path(source).resolve()), "source_sha256": sha256(source),
             "alpha_outside_rgb_changes": {

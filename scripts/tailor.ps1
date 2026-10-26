@@ -4,7 +4,7 @@ param(
     [Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments
 )
 . (Join-Path $PSScriptRoot 'common.ps1')
-if ($Command -eq 'help' -or $Arguments -contains '--help' -and $Command -eq 'setup') {
+if ($Command -eq 'help' -or (($Arguments -contains '--help') -and $Command -eq 'setup')) {
     Write-Output @'
 VTuberTailor
   setup [-NodePath <node.exe>] [-NpmCliPath <npm/bin/npm-cli.js>] [-PythonPath <python.exe>] [-JavaPath <java.exe>] [-WithExporter]

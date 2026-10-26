@@ -205,7 +205,10 @@ export async function packageVts(options) {
   const modelId = randomUUID().replaceAll('-', '');
   preset.Name = options['--name'];
   preset.ModelID = modelId;
-  preset.FileReferences = { ...preset.FileReferences, Model: 'model.model3.json' };
+  preset.FileReferences = {
+    ...preset.FileReferences, Model: 'model.model3.json',
+    Icon: '', IdleAnimation: '', IdleAnimationWhenTrackingLost: '',
+  };
   const files = [];
   await mkdir(outputRoot, { recursive: false });
   try {

@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { parseRuntimeControlRequest, parseRuntimeControlServiceRequest } from "../packages/core/src/runtime-control.js";
 import { RuntimeControlService } from "../apps/desktop/electron/runtime-control-service.js";
 import { RuntimeLogWriter } from "../apps/desktop/electron/runtime-log-writer.js";
+import { artifactPath } from "./support/artifacts.js";
 
 afterEach(() => vi.useRealTimers());
 
 describe("desktop input session recording and replay", () => {
   it("batches, rotates and caps runtime diagnostics without synchronous callers", async () => {
-    const directory = join("D:\\Tools", "PuppetLoom", "e2e", "runtime-log-writer", randomUUID());
+    const directory = artifactPath("runtime-log-writer", randomUUID());
     const path = join(directory, "runtime.log");
     const writer = new RuntimeLogWriter({ path, rotateBytes: 260, maximumTotalBytes: 900, maximumBatchBytes: 120, flushIntervalMs: 60_000 });
     for (let index = 0; index < 16; index += 1) writer.log("sample", { index, payload: "runtime-control" });
@@ -28,7 +29,7 @@ describe("desktop input session recording and replay", () => {
   it("summarizes high-frequency runtime requests instead of logging every sample", () => {
     vi.useFakeTimers();
     const log = vi.fn();
-    const service = new RuntimeControlService({ profileDirectory: "D:\\Tools\\PuppetLoom\\e2e\\runtime-log-batch-test", port: 0, log });
+    const service = new RuntimeControlService({ profileDirectory: artifactPath("runtime-log-batch-test"), port: 0, log });
     service.registerViewer({ id: 1, projectDirectory: "E:\\Characters\\A", projectName: "A", parameters: [], expressions: [], behaviors: [] });
     for (let index = 0; index < 100; index += 1) {
       service.applyLocal(parseRuntimeControlRequest({
@@ -52,7 +53,7 @@ describe("desktop input session recording and replay", () => {
   it("records effective control events and isolates replay from live sources", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-20T00:00:00.000Z"));
-    const service = new RuntimeControlService({ profileDirectory: "D:\\Tools\\PuppetLoom\\e2e\\runtime-session-test", port: 0 });
+    const service = new RuntimeControlService({ profileDirectory: artifactPath("runtime-session-test"), port: 0 });
     service.registerViewer({
       id: 1, projectDirectory: "E:\\Characters\\A", projectName: "A",
       parameters: [{ id: "smile", name: "Smile", min: 0, default: 0, max: 1 }],
@@ -80,7 +81,7 @@ describe("desktop input session recording and replay", () => {
   });
 
   it("rejects replay against a different saved revision", () => {
-    const service = new RuntimeControlService({ profileDirectory: "D:\\Tools\\PuppetLoom\\e2e\\runtime-session-revision-test", port: 0 });
+    const service = new RuntimeControlService({ profileDirectory: artifactPath("runtime-session-revision-test"), port: 0 });
     service.registerViewer({
       id: 1, projectDirectory: "E:\\Characters\\A", projectName: "A", revision: 4,
       parameters: [], expressions: [], behaviors: []
@@ -97,7 +98,7 @@ describe("desktop input session recording and replay", () => {
   it("starts a recording with the inputs that are already active", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-20T00:00:00.000Z"));
-    const service = new RuntimeControlService({ profileDirectory: "D:\\Tools\\PuppetLoom\\e2e\\runtime-session-baseline-test", port: 0 });
+    const service = new RuntimeControlService({ profileDirectory: artifactPath("runtime-session-baseline-test"), port: 0 });
     service.registerViewer({ id: 1, projectDirectory: "E:\\Characters\\A", projectName: "A", revision: 4, parameters: [], expressions: [], behaviors: [] });
     service.applyLocal(parseRuntimeControlRequest({
       version: 1, requestId: "pointer", op: "set", viewerId: 1,

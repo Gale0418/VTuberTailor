@@ -50,6 +50,25 @@ class ImageQATests(unittest.TestCase):
         self.assertEqual(comparison["raw_rgb_changed_pixels_with_both_alpha_zero"], 1)
         self.assertEqual(comparison["max_premultiplied_rgb_delta_0_255"], 0)
 
+    def test_inspect_premultiplied_delta_handles_opaque_white_without_overflow(self):
+        src = np.array([[[255, 255, 255, 255]]], dtype=np.uint8)
+        cand = np.array([[[0, 0, 0, 0]]], dtype=np.uint8)
+        a, b = self.save("opaque-white.png", src), self.save("transparent-black.png", cand)
+
+        _, report = inspect_rgba.inspect(b, source=a)
+
+        comparison = report["source_comparison_same_frame"]["alpha_outside_rgb_changes"]
+        self.assertEqual(comparison["max_premultiplied_rgb_delta_0_255"], 255)
+
+    def test_overlay_premultiplied_delta_handles_opaque_white_without_overflow(self):
+        src = self.save("overlay-opaque-white.png", np.array([[[255, 255, 255, 255]]], dtype=np.uint8))
+        cand = self.save("overlay-transparent-black.png", np.array([[[0, 0, 0, 0]]], dtype=np.uint8))
+
+        report = compare_overlay.compare(src, cand, self.root / "white-vs-transparent",
+                                         {"scale": 1, "tx": 0, "ty": 0}, [], [255, 255, 255])
+
+        self.assertEqual(report["metrics_per_roi"]["full"]["premultiplied_rgb_max_delta_0_255"], 255)
+
     def test_compositing_semitransparent_pixel_uses_selected_background(self):
         rgba = np.array([[[200, 100, 0, 128]]], dtype=np.uint8)
         result = compare_overlay.composite(rgba, [0, 0, 255])

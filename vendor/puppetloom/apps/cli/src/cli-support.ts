@@ -198,10 +198,12 @@ export async function runPhotoshopRepairTool(recipe: string, output: string, sho
     const child = spawn("powershell.exe", arguments_, { stdio: ["ignore", "pipe", "pipe"], windowsHide: !showPhotoshop });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
     child.once("error", rejectChild);
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       if (code !== 0) {
         rejectChild(new PuppetLoomError("IO_ERROR", stderr.trim() || stdout.trim() || `Photoshop 自动化退出，代码 ${code ?? "unknown"}。`));
         return;

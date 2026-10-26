@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildPoses } from './poses.mjs';
+import { assertRecordedMocPath } from './export-paths.mjs';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const readJson = async (path) => JSON.parse(await readFile(path, 'utf8'));
@@ -45,7 +46,7 @@ export async function runNativeVerification({ project: projectDir, exportDir, co
   if (sourceMap.width !== project.canvas.width || sourceMap.height !== project.canvas.height) throw new Error('Export source canvas does not match the canonical project.');
   if (!model3.FileReferences?.Moc || !Array.isArray(model3.FileReferences.Textures) || !model3.FileReferences.Textures.length) throw new Error('model.model3.json is missing MOC or texture references.');
   const mocPath = safeExportPath(exportDir, model3.FileReferences.Moc);
-  if (exportStatus.moc3 && resolve(exportStatus.moc3).toLowerCase() !== mocPath.toLowerCase()) throw new Error('export-status MOC path disagrees with model.model3.json.');
+  assertRecordedMocPath(exportStatus, exportDir, mocPath);
   const mocBytes = await readFile(mocPath), mocSha = sha256(mocBytes);
 
   const { poses, features } = buildPoses(project, new Set(Object.keys(exportStatus.parameterIds ?? {})));

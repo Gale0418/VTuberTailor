@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "1.0",
+  "artifactType": "completion-passport",
+  "taskId": "MC-003",
+  "taskDigest": "2041abcdf4768ebab6feda7398e5d88415a412ded91ce071d1b7d90b8ea062c2",
+  "status": "current",
+  "verification": {
+    "result": "pass",
+    "evidenceRefs": [
+      "references/code-review-2026-10-26.md",
+      "MissionCenter/smoke-tests.md",
+      "MissionCenter/decisions.md"
+    ]
+  },
+  "findings": [
+    {
+      "severity": "Low",
+      "id": "review-1-issue-1",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "Low",
+      "id": "review-1-issue-2",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "High",
+      "id": "review-1-issue-3",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "High",
+      "id": "review-1-issue-4",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "Low",
+      "id": "review-1-issue-5",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "Low",
+      "id": "review-1-issue-6",
+      "disposition": "rejected-with-counterevidence"
+    },
+    {
+      "severity": "Low",
+      "id": "review-1-issue-7",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "Low",
+      "id": "review-1-issue-8",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "Low",
+      "id": "review-1-issue-9",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "Low",
+      "id": "review-2-issue-1",
+      "disposition": "fixed"
+    },
+    {
+      "severity": "Low",
+      "id": "review-2-issue-2",
+      "disposition": "fixed"
+    }
+  ]
+}

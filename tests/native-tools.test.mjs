@@ -1,9 +1,63 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPoses } from '../scripts/native/poses.mjs';
 import { engineModuleUrls } from '../scripts/native/engine-module-urls.mjs';
+import { assertRecordedMocPath } from '../scripts/native/export-paths.mjs';
+
+test('recorded MOC paths remain valid when the export directory moves', () => {
+  const oldRoot = resolve('old-export'), movedRoot = resolve('moved-export');
+  assert.doesNotThrow(() => assertRecordedMocPath(
+    { outputDirectory: oldRoot, moc3: join(oldRoot, 'model.moc3') }, movedRoot, join(movedRoot, 'model.moc3'),
+  ));
+  assert.doesNotThrow(() => assertRecordedMocPath(
+    { outputDirectory: oldRoot, moc3: 'model.moc3' }, movedRoot, join(movedRoot, 'model.moc3'),
+  ));
+});
+
+test('recorded MOC paths reject a different directory even when basenames match', () => {
+  const root = resolve('export');
+  assert.throws(() => assertRecordedMocPath(
+    { outputDirectory: root, moc3: join(root, 'other', 'model.moc3') }, root, join(root, 'model.moc3'),
+  ), /MOC path disagrees/);
+  assert.throws(() => assertRecordedMocPath(
+    { outputDirectory: root, moc3: '../model.moc3' }, root, join(root, 'model.moc3'),
+  ), /MOC path disagrees/);
+});
+
+test('recorded MOC metadata rejects present empty or non-string paths', () => {
+  const root = resolve('export'), moc = join(root, 'model.moc3');
+  assert.doesNotThrow(() => assertRecordedMocPath({}, root, moc));
+  for (const moc3 of [undefined, null, false, 0, '', {}, []]) {
+    assert.throws(() => assertRecordedMocPath({ moc3 }, root, moc), /MOC path disagrees/);
+  }
+  for (const outputDirectory of [null, false, 0, '', {}, []]) {
+    assert.throws(() => assertRecordedMocPath({ moc3: moc, outputDirectory }, root, moc), /MOC path disagrees/);
+  }
+});
+
+test('recorded MOC path casing follows the host platform path contract', () => {
+  const root = resolve('export');
+  const check = () => assertRecordedMocPath(
+    { outputDirectory: root, moc3: join(root, 'MODEL.moc3') }, root, join(root, 'model.moc3'),
+  );
+  if (process.platform === 'win32') assert.doesNotThrow(check);
+  else assert.throws(check, /MOC path disagrees/);
+});
+
+test('recorded MOC paths keep case distinctions under the POSIX platform contract', () => {
+  const root = resolve('export');
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  try {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    assert.throws(() => assertRecordedMocPath(
+      { outputDirectory: root, moc3: join(root, 'MODEL.moc3') }, root, join(root, 'model.moc3'),
+    ), /MOC path disagrees/);
+  } finally {
+    Object.defineProperty(process, 'platform', descriptor);
+  }
+});
 
 const parameter = (id, semantic, min, defaultValue, max) => ({ id, semantic, min, default: defaultValue, max });
 
