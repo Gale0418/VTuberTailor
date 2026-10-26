@@ -38,6 +38,6 @@ CodeRabbit CLI 0.7.6 第一輪以 150 個相同內容的程式／測試／流程
 - 實際匯出後搬移整個匯出目錄，再用官方 Core 讀回：77 姿態、14 張 atlas 渲染、0 failures，最大位置誤差 0.49328 px 以內；VTS 套件的 model3 引用驗證通過。這是合成 fixture 的離線驗證，未啟動 VTS。
 - `doctor --require-exporter --forbid-root <old-root>` 通過；README 範例三張圖的 SHA-256 與原檔相同，圖示連結和來源標示已查核。
 
-另由獨立代理做一次 bounded 唯讀收尾查核，核對已知修補、README 範例及資料公開範圍，未見交付阻斷 P0/P1 或明顯回歸。這是人工／代理 advisory，與 CodeRabbit 結果及實際測試分開記錄。
+另由協作代理做一次 bounded 唯讀收尾查核，核對已知修補、README 範例及資料公開範圍，未見交付阻斷 P0/P1 或明顯回歸。該代理先前參與兩處影像 QA 修正；這項 advisory 與 CodeRabbit 外部審查、實際測試分開記錄。
 
 另經本地查證修正 README 的 Python 最低版本與 `inspect --panels` 必要參數，這兩項不是 CodeRabbit 提出的 issues。

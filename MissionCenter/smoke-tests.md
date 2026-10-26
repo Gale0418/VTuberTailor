@@ -59,3 +59,24 @@
 - 日期：2026-10-26
 - 任務 ID：MC-003
 - 執行類型：automated
+
+## 2026-10-26｜README、授權展示圖片與 main 發布核對｜MC-004
+
+- 如何測試：核對本機發布 commit、push 輸出、GitHub `refs/heads/main`、遠端 README 與 `assets/examples/` 三圖 metadata/blob SHA，並檢查最終本機 Git 狀態與分支。
+- 預期結果：程式修正、README 與僅獲授權的三張展示圖片推送至 `main`；遠端內容與本機相符；工作樹乾淨且無額外分支。
+- 實際觀察：commit `e6504fd8bf4d4457e8526543130bd5b56e1110f4`，push exit 0（`9b038c6..e6504fd main -> main`）；GitHub connector 獨立讀取遠端 main 同一 SHA，確認 README 新標題／三圖標籤與三個 PNG metadata；三圖 blob SHA 逐一與本機 Git 相同。執行後 Git status porcelain 為空、分支只有 `main`，且 `main` 與 `origin/main` 同步。root 記錄實際觀察時間為 2026-10-26T09:53:23Z（台北 17:53）。
+- 結果：Pass（程式／README／限定展示圖已公開推送；這是第一次發布，不代表後續 MissionCenter receipt-only 更新已推送）。
+- 證據：[發布 commit](https://github.com/Gale0418/VTuberTailor/commit/e6504fd8bf4d4457e8526543130bd5b56e1110f4)、README 與 `assets/examples/` 三圖。
+- 日期：2026-10-26
+- 任務 ID：MC-004
+- 執行類型：manual
+
+## 2026-10-26｜MC-004 與 MC-001 完成 passport transition｜MC-001
+
+- 如何測試：依官方 v0.5.2 digest/parser 契約建立完成 passport，使用 Rust CLI 對 MC-004 執行 Review→Done，對 MC-001 執行 In Progress→Review→Done。
+- 預期結果：passport 與發布證據通過；所有 Epic／Task 均為 Done，無未完成 blocker。
+- 實際觀察：三個 Rust transition 均回報 `status=committed`、`written=true`；狀態最終為 MC-001～MC-004 全 Done。首次程式與 README／授權展示圖發布已由上方 MC-004 核對；最終 MissionCenter receipts 待 root 做 docs-only commit/push，這是發布後的收據同步。
+- 結果：Pass（限 MissionCenter passport gate 與本輪既有發布證據；docs-only 收據同步尚未發生）。
+- 日期：2026-10-26
+- 任務 ID：MC-001
+- 執行類型：automated

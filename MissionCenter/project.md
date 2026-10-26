@@ -22,8 +22,10 @@
 - 2026-10-26｜MC-003 最終驗證：Node 20/20、Python 10 pass/1 skip（junction pass）、vendor 9 files/53 tests、六個 workspace build、19-layer smoke 10 PNG；匯出資料夾搬移後官方 Core 77 poses／14 frames／0 failures／最大誤差 0.49328 px 以內，VTS runtime references valid；final doctor ready=true。Review-2 兩項 minor 均有 fail-first／pass-after 測試；critic_lite advisory 無 P0/P1。
 - 2026-10-26｜MC-002 官方 digest source 已找到：公開 GitHub tag v0.5.2 `canonical_task_digest` 與 parser alias。正式 Rust passport gate 已接受 MC-002 並 committed Review→Done；算法及證據見 decisions.md、smoke-tests.md。
 - 2026-10-26｜MC-004 已備妥 README／任務中心，狀態 Review，等待實際 commit、push 與遠端 main 證據。root 正準備首個發布 commit；發布前不把 Epic 標 Done。
+- 2026-10-26T09:53:23Z（台北 17:53）｜首次公開發布完成｜commit `e6504fd8bf4d4457e8526543130bd5b56e1110f4` 推送 `main`，push exit 0；GitHub ref `main` 獨立核實同 SHA，README 與三張已授權 PNG 的 metadata／blob SHA 與本機相符；工作樹乾淨、只有 `main` 分支且與 `origin/main` 同步。發布詳情見 `smoke-tests.md`。後續只更新最終 receipt／closeout 任務紀錄，屬收據同步，不是程式或圖片首次發布。
+- 2026-10-26T10:07Z｜MC-004 由 Review→Done；MC-001 依序 In Progress→Review→Done，正式 Rust passport gates 均 committed。MC-001～MC-004 全為 Done；程式、README 與三圖已在遠端。待 root 僅推送此後的 MissionCenter 收尾收據，並記錄第二次 docs-only commit，不宣稱其尚未完成。
 
 ## Open comments
 
 - MC-002、MC-003 均已完成正式 passport gate 與 Review→Done transition。
-- MC-002、MC-003 均已正式 Review→Done；MC-004 保持 Review 等實際 commit/push 證據與最終 Git 狀態，不將本機檢查當成發布完成。
+- 所有 task／Epic 均 Done；程式、README 與授權三圖已發布至 main。待任務中心收尾收據由 root 另行 commit/push；此為已完成發布的記錄同步，非程式／圖片發布阻塞。

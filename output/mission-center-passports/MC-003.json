@@ -2,7 +2,7 @@
   "schemaVersion": "1.0",
   "artifactType": "completion-passport",
   "taskId": "MC-003",
-  "taskDigest": "2041abcdf4768ebab6feda7398e5d88415a412ded91ce071d1b7d90b8ea062c2",
+  "taskDigest": "d6e4d39c18271dbc6eb8886d261a95311ff28077854ebfb5b2b0c29a0fbfa52a",
   "status": "current",
   "verification": {
     "result": "pass",

@@ -1,11 +1,11 @@
 # 進度
 
 - 專案：VTuberTailor
-- 目標：CodeRabbit review、finding 修正與驗證、README／任務中心更新、提交並上傳 main。
-- 狀態：review-1 完成並已修正／處置 9 項；review-2 完成但兩項 minor 待 disposition；搬移 export 真 Core integration 尚未完成。
-- 里程碑：完成 passport taskDigest 流程阻塞、真 Core integration 與 review-2 disposition 後，更新文件並發布 main。
-- 進度：0/3 子任務 Done（MC-002 Review；MC-003 In Progress；MC-004 Blocked）。
-- 進行中：MC-003
-- 阻塞：MC-002 等官方 taskDigest 產生方式；MC-004 等 MC-003 收斂。
-- 已通過：build；Node 17/17、Python 10 pass/1 skip、image 7/7、vendor 9 files/53 tests、19-layer smoke 10 PNG（詳見 smoke-tests.md）。
-- 下一步：完成搬移 export 真 Core integration、核實 review-2 兩項 minor；不再跑第三次 CodeRabbit review。
+- 目標：完成 CodeRabbit 真問題修正與驗證，更新 README／MissionCenter，推送 `main`。
+- 目前狀態：程式、README 與使用者指定的三張展示圖已首次發布至 `main`；MC-001～MC-004 均已通過正式 passport gate 並為 Done。
+- 首次發布：`e6504fd8bf4d4457e8526543130bd5b56e1110f4`，遠端 `main` 獨立核實同 SHA；push exit 0，工作樹當時乾淨、無額外分支。
+- 里程碑：3/3 leaf tasks 完成；本機驗證與 CodeRabbit dispositions 完成；首輪遠端發布完成。
+- 進度：`[██████████] 3/3 leaf tasks`。
+- 進行中：無。
+- 阻塞：無。
+- 下一步：root 將只提交／推送最終 MissionCenter receipts 與 closeout 更新；這是已完成發布的記錄同步，不是待發布的程式或圖片。
