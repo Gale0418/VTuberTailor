@@ -1,0 +1,220 @@
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import sharp from "sharp";
+import { beforeAll, describe, expect, it } from "vitest";
+import { artifactPath } from "./support/artifacts.js";
+import {
+  PuppetLoomError,
+  createProject,
+  enhanceProject,
+  importPsd,
+  inspectPsd,
+  loadProject,
+  verifyProject
+} from "@puppetloom/core";
+
+const fixtures = resolve("test/fixtures");
+const runRoot = artifactPath(`pipeline-${process.pid}-${Date.now()}`);
+const semanticOutput = resolve(runRoot, "semantic-a");
+
+beforeAll(async () => {
+  await mkdir(runRoot, { recursive: true });
+  await createProject({
+    input: resolve(fixtures, "semantic.psd"),
+    reference: resolve(fixtures, "semantic-reference.png"),
+    output: semanticOutput,
+    seed: 42
+  });
+}, 120_000);
+
+describe("PSD inspection and conservative fallback", () => {
+  it.each([
+    ["semantic.psd", "semantic"],
+    ["grouped.psd", "grouped"],
+    ["minimal.psd", "minimal"],
+    ["missing-face.psd", "grouped"],
+    ["unknown-noise.psd", "minimal"]
+  ])("selects %s as %s", async (name, rigLevel) => {
+    const report = await inspectPsd(resolve(fixtures, name));
+    expect(report.valid).toBe(true);
+    expect(report.suggestedRigLevel).toBe(rigLevel);
+  });
+
+  it("splits merged paired eye layers by image position", async () => {
+    const imported = await importPsd(resolve(fixtures, "combined-eyes.psd"));
+    expect(imported.preflight).toMatchObject({ componentSplitCount: 4, fallbackSplitCount: 0 });
+    for (const role of ["eyeWhite", "iris", "eyelash", "eyebrow"] as const) {
+      const layers = imported.layers.filter((layer) => layer.role === role);
+      expect(layers.map((layer) => layer.side).sort()).toEqual(["left", "right"]);
+      expect(layers.every((layer) => layer.alpha?.pairSplit.method === "components")).toBe(true);
+    }
+  });
+
+  it("applies PSD masks and inherits group opacity while preserving blend mode", async () => {
+    const imported = await importPsd(resolve(fixtures, "mask-group-blend.psd"));
+    expect(imported.layers).toHaveLength(1);
+    const layer = imported.layers[0]!;
+    expect(layer.opacity).toBeCloseTo((128 / 255) ** 2, 6);
+    expect(layer.blendMode).toBe("multiply");
+    expect(layer.bounds.x + layer.bounds.width).toBeLessThanOrEqual(65);
+    expect(layer.opaquePixels).toBeGreaterThan(1000);
+  });
+
+  it("automatically removes confirmed Alpha noise while preserving it only by explicit override", async () => {
+    const automatic = await importPsd(resolve(fixtures, "unknown-noise.psd"));
+    const preserved = await importPsd(resolve(fixtures, "unknown-noise.psd"), { alphaCleanup: "preserve-all" });
+    const aggressive = await importPsd(resolve(fixtures, "unknown-noise.psd"), { alphaCleanup: "remove-all-tiny" });
+    expect(automatic.preflight).toMatchObject({ cleanupMode: "automatic", confirmedNoiseComponentCount: 1, confirmedNoisePixelCount: 1, suspectedDetailComponentCount: 0, cleanupApplied: true });
+    expect(preserved.preflight).toMatchObject({ cleanupMode: "preserve-all", confirmedNoiseComponentCount: 1, cleanupApplied: false });
+    expect(aggressive.preflight).toMatchObject({ cleanupMode: "remove-all-tiny", cleanupApplied: true });
+    expect(preserved.layers[0]!.opaquePixels - automatic.layers[0]!.opaquePixels).toBe(1);
+    expect(automatic.layers[0]!.opaquePixels).toBe(aggressive.layers[0]!.opaquePixels);
+  });
+
+  it.each(["empty.psd", "corrupted.psd"])("rejects invalid input %s", async (name) => {
+    await expect(inspectPsd(resolve(fixtures, name))).rejects.toMatchObject<PuppetLoomError>({ code: "INVALID_INPUT" });
+  });
+});
+
+describe("project creation", () => {
+  it("writes the documented directory and a valid semantic rig", async () => {
+    const project = await loadProject(semanticOutput);
+    const verification = await verifyProject(semanticOutput);
+    expect(project.rigLevel).toBe("semantic");
+    expect(project.runtime.profile).toBe("coherent-v3");
+    expect(project.runtime.semanticCage?.validation.confidence).toBeGreaterThan(0.6);
+    expect(project.layers).toHaveLength(19);
+    expect(project.runtime.features.mouthMotion).toBe(false);
+    expect(project.quality.poseValidations).toHaveLength(13);
+    expect(verification.valid).toBe(true);
+    for (const relative of [
+      "puppetloom.json", "source/source.psd", "source/reference.png", "reports/build-report.json",
+      "reports/neutral.png", "reports/pose-sheet.png", "reports/semantic-cage.png", "reports/semantic-cage-head.png",
+      "reports/landmark-report.json", "reports/import-preflight.json", "requests/asset-requests.json"
+    ]) expect((await stat(resolve(semanticOutput, relative))).isFile()).toBe(true);
+  });
+
+  it("keeps neutral recomposition equal to the PSD composite", async () => {
+    const reference = await sharp(resolve(fixtures, "semantic-reference.png")).raw().toBuffer();
+    const neutral = await sharp(resolve(semanticOutput, "reports/neutral.png")).raw().toBuffer();
+    let changed = 0;
+    let maximumDifference = 0;
+    for (let index = 0; index < reference.length; index += 1) {
+      const difference = Math.abs((reference[index] ?? 0) - (neutral[index] ?? 0));
+      if (difference > 0) changed += 1;
+      maximumDifference = Math.max(maximumDifference, difference);
+    }
+    expect(maximumDifference).toBeLessThanOrEqual(1);
+    expect(changed / reference.length).toBeLessThan(0.00001);
+  });
+
+  it("reports the exact PSD layers affected by the face and skull cages", async () => {
+    const report = JSON.parse(await readFile(resolve(semanticOutput, "reports/landmark-report.json"), "utf8")) as {
+      appliedLayers: { face: Array<{ id: string; role: string }>; skull: Array<{ id: string; role: string }> };
+      triangles: { face: string[][]; skull: string[][] };
+    };
+    expect(report.appliedLayers.face.some((layer) => layer.role === "face")).toBe(true);
+    expect(report.appliedLayers.face.filter((layer) => layer.role === "eyeWhite")).toHaveLength(2);
+    expect(report.appliedLayers.skull.some((layer) => layer.role === "frontHair")).toBe(true);
+    expect(report.triangles.face.flat()).toContain("eyeLeftOuter");
+    expect(report.triangles.face.flat()).toContain("mouthRight");
+  });
+
+  it("produces real 13-pose visual evidence", async () => {
+    const sheet = await sharp(resolve(semanticOutput, "reports/pose-sheet.png")).raw().toBuffer({ resolveWithObject: true });
+    expect(sheet.info.width).toBe(960);
+    expect(sheet.info.height).toBe(960);
+    const neutral = await sharp(resolve(semanticOutput, "reports/pose-sheet.png")).extract({ left: 25, top: 20, width: 190, height: 180 }).raw().toBuffer();
+    const yaw = await sharp(resolve(semanticOutput, "reports/pose-sheet.png")).extract({ left: 265, top: 20, width: 190, height: 180 }).raw().toBuffer();
+    expect(Buffer.compare(neutral, yaw)).not.toBe(0);
+  });
+
+  it("is deterministic for the same input and seed", async () => {
+    const second = resolve(runRoot, "semantic-b");
+    await createProject({ input: resolve(fixtures, "semantic.psd"), reference: resolve(fixtures, "semantic-reference.png"), output: second, seed: 42 });
+    expect(await readFile(resolve(semanticOutput, "puppetloom.json"), "utf8")).toBe(await readFile(resolve(second, "puppetloom.json"), "utf8"));
+    expect(await readFile(resolve(semanticOutput, "reports/build-report.json"), "utf8")).toBe(await readFile(resolve(second, "reports/build-report.json"), "utf8"));
+  }, 120_000);
+
+  it.each([
+    ["grouped.psd", "grouped"],
+    ["minimal.psd", "minimal"]
+  ])("creates a valid %s fallback", async (fixture, expected) => {
+    const output = resolve(runRoot, expected);
+    const result = await createProject({ input: resolve(fixtures, fixture), output, seed: 7 });
+    expect(result.project.rigLevel).toBe(expected);
+    expect((await verifyProject(output)).valid).toBe(true);
+  }, 120_000);
+
+  it("refuses to mix a new project into a non-empty directory", async () => {
+    await expect(createProject({ input: resolve(fixtures, "minimal.psd"), output: semanticOutput })).rejects.toMatchObject<PuppetLoomError>({ code: "OUTPUT_NOT_EMPTY" });
+  });
+});
+
+describe("optional enhancement", () => {
+  it("describes blink and compact mouth-shape requests without blocking the build", async () => {
+    const requests = JSON.parse(await readFile(resolve(semanticOutput, "requests/asset-requests.json"), "utf8")) as { optional: boolean; requests: Array<{ id: string; kind: string; reference: { path: string } }> };
+    expect(requests.optional).toBe(true);
+    expect(requests.requests.map(({ id }) => id)).toEqual(["closed-eye-left", "closed-eye-right", "mouth-open-small"]);
+    expect(requests.requests.map(({ kind }) => kind)).toEqual(["closed-eye", "closed-eye", "mouth-shape"]);
+    for (const request of requests.requests) expect((await stat(resolve(semanticOutput, request.reference.path))).isFile()).toBe(true);
+  });
+
+  it("migrates a legacy slight-mouth request to the default two-state contract without deleting its evidence", async () => {
+    const output = resolve(runRoot, "legacy-mouth-request");
+    await createProject({ input: resolve(fixtures, "semantic.psd"), reference: resolve(fixtures, "semantic-reference.png"), output, seed: 42 });
+    const requestPath = resolve(output, "requests/asset-requests.json");
+    const document = JSON.parse(await readFile(requestPath, "utf8")) as { requests: Array<Record<string, unknown>> };
+    const open = document.requests.find((request) => request.id === "mouth-open-small")!;
+    document.requests.splice(document.requests.length - 1, 0, {
+      ...open,
+      id: "mouth-slight",
+      variant: "slight",
+      reference: { path: "requests/references/mouth-slight.png" },
+      output: { ...(open.output as object), path: "supplements/mouth-slight.png" }
+    });
+    await writeFile(requestPath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+
+    const result = await enhanceProject({ project: output, assets: resolve(runRoot, "missing-legacy-supplements") });
+    expect(result.rejected.map((entry) => entry.requestId)).not.toContain("mouth-slight");
+    const migrated = JSON.parse(await readFile(requestPath, "utf8")) as { requests: Array<{ id: string }> };
+    expect(migrated.requests.map((request) => request.id)).toEqual(["closed-eye-left", "closed-eye-right", "mouth-open-small"]);
+    expect((await stat(resolve(output, "requests/asset-requests.pre-two-state.json"))).isFile()).toBe(true);
+  });
+
+  it("rejects wrong-size supplements and preserves the safe project", async () => {
+    const assetDirectory = resolve(runRoot, "bad-supplements");
+    await mkdir(assetDirectory, { recursive: true });
+    await sharp({ create: { width: 3, height: 3, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toFile(resolve(assetDirectory, "closed-eye-left.png"));
+    await sharp({ create: { width: 3, height: 3, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toFile(resolve(assetDirectory, "closed-eye-right.png"));
+    await sharp({ create: { width: 3, height: 3, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toFile(resolve(assetDirectory, "mouth-open-small.png"));
+    const before = await readFile(resolve(semanticOutput, "puppetloom.json"), "utf8");
+    const result = await enhanceProject({ project: semanticOutput, assets: assetDirectory });
+    expect(result.accepted).toHaveLength(0);
+    expect(result.rejected).toHaveLength(3);
+    expect(await readFile(resolve(semanticOutput, "puppetloom.json"), "utf8")).toBe(before);
+  });
+
+  it("accepts a complete eye and mouth supplement set", async () => {
+    const assetDirectory = resolve(runRoot, "valid-supplements");
+    await mkdir(assetDirectory, { recursive: true });
+    const document = JSON.parse(await readFile(resolve(semanticOutput, "requests/asset-requests.json"), "utf8")) as { requests: Array<{ id: string; output: { width: number; height: number; path: string } }> };
+    for (const request of document.requests) {
+      const width = request.output.width;
+      const height = request.output.height;
+      const mark = Buffer.from(`<svg width="${width}" height="${height}"><rect x="${Math.round(width * 0.3)}" y="${Math.round(height * 0.42)}" width="${Math.max(2, Math.round(width * 0.4))}" height="${Math.max(2, Math.round(height * 0.16))}" rx="2" fill="#442d38"/></svg>`);
+      await sharp({ create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).composite([{ input: mark }]).png().toFile(resolve(assetDirectory, request.output.path.split("/").at(-1)!));
+    }
+    const result = await enhanceProject({ project: semanticOutput, assets: assetDirectory });
+    expect(result.accepted).toEqual(["closed-eye-left", "closed-eye-right", "mouth-open-small"]);
+    expect(result.rejected).toEqual([]);
+    expect(result.project.runtime.features.blink).toBe(true);
+    for (const closed of result.project.layers.filter((layer) => layer.role === "eyeClosed")) {
+      expect(closed.pivot).toEqual(result.project.layers.find((layer) => layer.role === "eyeWhite" && layer.side === closed.side)?.pivot);
+    }
+    expect(result.project.layers.filter((layer) => layer.role === "mouth").map((layer) => layer.mouthVariant).sort()).toEqual(["closed", "open"]);
+    expect(result.project.layers.filter((layer) => layer.role === "mouth" && layer.mouthVariant === "closed" && layer.opacity === 1)).toHaveLength(1);
+    expect(JSON.parse(await readFile(resolve(semanticOutput, "reports/build-report.json"), "utf8"))).toMatchObject({ layerCount: 22, enabledFeatures: expect.arrayContaining(["blink", "mouthMotion"]), disabledFeatures: [] });
+    expect((await verifyProject(semanticOutput)).valid).toBe(true);
+  });
+});

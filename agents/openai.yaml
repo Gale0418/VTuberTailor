@@ -1,0 +1,6 @@
+interface:
+  display_name: "VTuberTailor｜原畫到 V 皮"
+  short_description: "從原圖拆件、像素配準與疊圖驗收到 VTS 交付的 2D VTuber 工坊"
+  default_prompt: "使用 $vtuber-tailor 檢查並完成這個 2D VTuber 角色任務。"
+policy:
+  allow_implicit_invocation: true

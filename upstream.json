@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/CheshireMew/PuppetLoom",
+  "commit": "d12c3fc6233a35285a53478ef6dff6941cdd3c10",
+  "license": "AGPL-3.0-or-later",
+  "snapshotDate": "2026-10-26",
+  "sourceFiles": 392,
+  "sourceManifest": "vendor/puppetloom-source-manifest.json",
+  "modifications": "vendor/puppetloom/VTUBERTAILOR_CHANGES.md"
+}

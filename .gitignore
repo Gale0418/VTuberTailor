@@ -1,0 +1,16 @@
+.runtime/
+.venv/
+__pycache__/
+*.pyc
+projects/
+local-reports/
+archives/
+artifacts/
+*.local.json
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+node_modules/
+dist/
