@@ -334,7 +334,7 @@
 - 2026-11-01：Chrome synthetic 以複製 face driver 注入 X 超限，實際走 FaceNeckOverlap/MeshField guard 與 app catch；102 PASS、sentinel 不變。raw magnitude 25.667 超安全 cap 12.25，guard 前 upload serial 不變；同姿態 historical fallback 網格和 pixels 完全一致，左右眼仍可見。此為受控合成故障，非真人幾何自行翻面。長髮有限支撐 helper 修正自訂等端點不連續後，Node 合成測試 5/5，尚未接入 app 或驗收真實後髮。
 - 2026-11-01：長髮支撐接到 yaw opt-in（僅有驗證 strands 與頂點對齊 su 的髮層，無資料則回退），Node 合成 11 項與 Chrome synthetic 365 PASS／0 FAIL、sentinel 不變；synthetic 的舊版部分在 yaw gate-off，非實際角色驗收。重新載入授權 2048 PSD 時，本機可用由約 7.9 GiB 降至 6.8 GiB，系統 swap total 同時由 8 GiB 增至 9 GiB，顯示記憶體壓力可能影響空間；為保護容量關閉本輪隔離分頁與 server，未執行新版本角色視覺驗證。不可推定模型已修復或刪除其他任務程序。
 
-- Last organized: 2026-11-01
+- Last organized: 2026-11-04
 
 - 2026-11-01：已對 2048×2048 授權 Anime2.5DRig 測試副本，在 Chrome 隔離頁載入 `faceNeck=1&pitchSurface=skull-share&yawProfile=1`、建立 face 3×3 試稿並啟用 face-field，觀察四個 X/Y 極值。pitch 與 face→neck 狀態顯示 active、四角畫面可見，但臉部仍以正面與小幅橫移為主、髮型轉向感不足，不能視為通過；neck 上緣與衣領仍須材質驗收。雙眼閉合顯示工具內建替代閉眼；將 mouth open 設為 1 時仍近似小笑線，原因尚未定位。這是網頁試驗，非正式 VTS 角色、官方模型或攝影機驗收；關閉本次 Chrome 頁與 8766 伺服器，未寫 PSD。
 - 2026-11-01：隔離預覽 worker 新增明示 preprocessed 快速路徑，避免已預處理且位於畫布內的圖層重複 alpha cleanup；跨畫布邊界仍做第二遍，因剪裁可能改變連通元件。synthetic 比對舊 worker 的 clean→build 路徑，包含多層、抗鋸齒、孤立成分、空層與邊界；Node 套件 24 項命令通過，含兩個上游範例 PSD 載入／回寫。尚未量測記憶體峰值，未聲稱空間壓力已解決。已將程式與測試備份至 git 忽略的 projects/anime25-xy-experiment-20261030。
