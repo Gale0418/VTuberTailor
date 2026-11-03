@@ -31,6 +31,7 @@ import type { DragTarget, EditMode, MeshSelectionMode } from "./EditorPresentati
 import type { StudioSection } from "./EditorStudioPanels.js";
 import { clone, editorPoses, layerOverride, messageOf, smoothstep } from "./EditorWorkspaceModel.js";
 import { validateEditorProject } from "./useEditorValidation.js";
+import { previewStateWithField, previewStateWithPose } from "./preview-state.js";
 
 interface MeshDragSnapshot {
   selected: number[];
@@ -410,7 +411,7 @@ export function useEditorEditingTools({
 
   function setPreviewField(key: keyof MotionState, value: number): void {
     setAutonomous(false);
-    setPreviewState((current) => ({ ...current, [key]: value }));
+    setPreviewState((current) => previewStateWithField(project, current, key, value));
   }
 
   function setPreviewExpression(expressionId: string, value: number): void {
@@ -422,23 +423,7 @@ export function useEditorEditingTools({
     setAutonomous(false);
     setPoseId(Object.entries(editorPoses).find(([, item]) => Math.abs(item.state.headYaw - yaw) < 0.02 && Math.abs(item.state.headPitch - pitch) < 0.02)?.[0] ?? "custom");
     setActivePreviewSample("custom");
-    setPreviewState((current) => {
-      const parameters = { ...(current.parameters ?? {}) };
-      const yawParameter = project?.model.parameters.find((parameter) => parameter.semantic === "head-yaw");
-      const pitchParameter = project?.model.parameters.find((parameter) => parameter.semantic === "head-pitch");
-      if (yawParameter) parameters[yawParameter.id] = yaw;
-      if (pitchParameter) parameters[pitchParameter.id] = pitch;
-      return {
-        ...current,
-        headYaw: yaw,
-        headPitch: pitch,
-        bodySway: yaw * 0.5,
-        bodyPitch: pitch * 0.38,
-        gazeX: yaw * 0.45,
-        gazeY: pitch * 0.3,
-        parameters
-      };
-    });
+    setPreviewState((current) => previewStateWithPose(project, current, yaw, pitch));
   }
 
   function selectPose(id: string): void {

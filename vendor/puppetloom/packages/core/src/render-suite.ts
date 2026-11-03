@@ -6,7 +6,12 @@ import { agentRegionCrop, agentTargetRegion } from "./agent-evidence.js";
 import { modelAgentPartDefinitions } from "./agent.js";
 import { neutralMotionState } from "./deform.js";
 import { ModelPhysicsController } from "./model.js";
-import { loadProjectTextureSources, renderProjectPoseWithSources } from "./offline-render.js";
+import {
+  loadProjectTextureSources,
+  loadProjectTextureSourcesLowMemory,
+  renderProjectDirectoryPoseLowMemory,
+  renderProjectPoseWithSources
+} from "./offline-render.js";
 import { loadCalibration, loadProjectRevision } from "./project.js";
 import { safetyPoseState } from "./safety.js";
 import type {
@@ -25,6 +30,27 @@ interface Sample {
   label: string;
   kind: "pose" | "motion";
   state: MotionState;
+}
+
+export interface RenderSuiteTextureOptions {
+  /** Explicit opt-in for sequential, visibility-aware texture loading. */
+  lowMemoryTextures?: boolean;
+  /** Explicit opt-in for decoding one layer at a time during each render. */
+  streamingTextures?: boolean;
+}
+
+type RenderSuiteOptionsWithTextureLoading = RenderSuiteOptions & RenderSuiteTextureOptions;
+
+function validateTextureOptions(options: RenderSuiteTextureOptions): void {
+  if (options.lowMemoryTextures && options.streamingTextures) {
+    throw new Error("lowMemoryTextures 與 streamingTextures 不能同時指定；請明確選擇一種材質載入方式。" );
+  }
+}
+
+function validateRenderSize(size: number | undefined): number {
+  const renderSize = size ?? 300;
+  if (!Number.isInteger(renderSize) || renderSize < 300 || renderSize > 1600) throw new Error("证据尺寸必须是 300 到 1600 之间的整数。");
+  return renderSize;
 }
 
 async function fileSha256(path: string): Promise<string> {
@@ -143,8 +169,9 @@ export async function renderProjectSuite(
   outputDirectory: string,
   suite: RenderSuiteKind = "calibration",
   requestedRevision?: number,
-  options: RenderSuiteOptions = {}
+  options: RenderSuiteOptionsWithTextureLoading = {}
 ): Promise<RenderSuiteResult> {
+  validateTextureOptions(options);
   const root = resolve(projectDirectory);
   const output = resolve(outputDirectory);
   const revision = requestedRevision ?? (await loadCalibration(root)).revision;
@@ -166,17 +193,24 @@ export async function renderProjectSuiteFromProject(
   suite: RenderSuiteKind,
   revision: number,
   previews: AuthoringPreview[] = [],
-  options: RenderSuiteOptions = {}
+  options: RenderSuiteOptionsWithTextureLoading = {}
 ): Promise<RenderSuiteResult> {
   const root = resolve(projectDirectory);
   const output = resolve(outputDirectory);
-  const sources = await loadProjectTextureSources(root, project);
-  const samples = samplesFor(project, suite, previews);
-  const artifacts: RenderArtifact[] = [];
-  const renderSize = options.size ?? 300;
-  if (!Number.isInteger(renderSize) || renderSize < 300 || renderSize > 1600) throw new Error("证据尺寸必须是 300 到 1600 之间的整数。");
+  validateTextureOptions(options);
+  const renderSize = validateRenderSize(options.size);
   const targetLayerIds = options.focus ? focusLayerIds(project, options.focus) : [];
   if (options.focus && targetLayerIds.length === 0) throw new Error(`项目中没有可用于 ${options.focus} 局部证据的图层。`);
+  const sources = options.streamingTextures
+    ? undefined
+    : options.lowMemoryTextures
+      ? await loadProjectTextureSourcesLowMemory(root, project)
+      : await loadProjectTextureSources(root, project);
+  const renderPose = async (state: MotionState, width: number, height: number) => options.streamingTextures
+    ? renderProjectDirectoryPoseLowMemory(root, project, state, width, height)
+    : renderProjectPoseWithSources(project, sources!, state, width, height);
+  const samples = samplesFor(project, suite, previews);
+  const artifacts: RenderArtifact[] = [];
   const region = options.focus ? agentTargetRegion(project, project, targetLayerIds) : undefined;
   // Render the close-up from a larger source instead of enlarging a thumbnail.
   const focusSourceSize = region
@@ -193,13 +227,13 @@ export async function renderProjectSuiteFromProject(
     const focusDirectory = region ? join(output, "focus", kind === "pose" ? "poses" : "motion") : undefined;
     if (focusDirectory) await mkdir(focusDirectory, { recursive: true });
     for (const sample of kindSamples) {
-      const pixels = renderProjectPoseWithSources(project, sources, sample.state, renderSize, renderSize);
+      const pixels = await renderPose(sample.state, renderSize, renderSize);
       const path = join(directory, `${sample.id}.png`);
       await sharp(Buffer.from(pixels.data), { raw: { width: renderSize, height: renderSize, channels: 4 } }).png().toFile(path);
       paths.push(path);
       artifacts.push({ id: sample.id, kind, path, state: sample.state, sha256: await fileSha256(path) });
       if (region && focusDirectory) {
-        const focusPixels = focusSourceSize === renderSize ? pixels : renderProjectPoseWithSources(project, sources, sample.state, focusSourceSize, focusSourceSize);
+        const focusPixels = focusSourceSize === renderSize ? pixels : await renderPose(sample.state, focusSourceSize, focusSourceSize);
         const crop = agentRegionCrop(project, region, focusSourceSize, focusSourceSize);
         const focusPath = join(focusDirectory, `${sample.id}.png`);
         await sharp(Buffer.from(focusPixels.data), { raw: { width: focusSourceSize, height: focusSourceSize, channels: 4 } })
@@ -272,15 +306,17 @@ export async function compareProjectRevisions(
   fromRevision: number,
   toRevision: number,
   outputDirectory: string,
-  previews: AuthoringPreview[] = []
+  previews: AuthoringPreview[] = [],
+  options: RenderSuiteTextureOptions = {}
 ): Promise<RevisionComparisonResult> {
+  validateTextureOptions(options);
   const output = resolve(outputDirectory);
   await mkdir(output, { recursive: true });
   const [beforeProject, afterProject] = await Promise.all([
     loadProjectRevision(projectDirectory, fromRevision),
     loadProjectRevision(projectDirectory, toRevision)
   ]);
-  return compareProjectStates(projectDirectory, beforeProject, afterProject, fromRevision, toRevision, output, previews);
+  return compareProjectStates(projectDirectory, beforeProject, afterProject, fromRevision, toRevision, output, previews, options);
 }
 
 export async function compareProjectStates(
@@ -290,12 +326,14 @@ export async function compareProjectStates(
   fromRevision: number,
   toRevision: number,
   outputDirectory: string,
-  previews: AuthoringPreview[] = []
+  previews: AuthoringPreview[] = [],
+  options: RenderSuiteTextureOptions = {}
 ): Promise<RevisionComparisonResult> {
+  validateTextureOptions(options);
   const output = resolve(outputDirectory);
   await mkdir(output, { recursive: true });
-  const before = await renderProjectSuiteFromProject(projectDirectory, beforeProject, join(output, "before"), "calibration", fromRevision, previews);
-  const after = await renderProjectSuiteFromProject(projectDirectory, afterProject, join(output, "after"), "calibration", toRevision, previews);
+  const before = await renderProjectSuiteFromProject(projectDirectory, beforeProject, join(output, "before"), "calibration", fromRevision, previews, options);
+  const after = await renderProjectSuiteFromProject(projectDirectory, afterProject, join(output, "after"), "calibration", toRevision, previews, options);
   const beforeSheet = before.artifacts.find((artifact) => artifact.id === "pose-sheet")!.path;
   const afterSheet = after.artifacts.find((artifact) => artifact.id === "pose-sheet")!.path;
   const beforeMotionSheet = before.artifacts.find((artifact) => artifact.id === "motion-sheet")!.path;
@@ -356,18 +394,38 @@ export async function compareNeutralProjectStates(
   projectDirectory: string,
   beforeProject: import("./types.js").PuppetLoomProject,
   afterProject: import("./types.js").PuppetLoomProject,
-  outputDirectory: string
+  outputDirectory: string,
+  options: RenderSuiteTextureOptions = {}
 ): Promise<RevisionComparisonResult["visualDifference"]> {
+  validateTextureOptions(options);
   const output = resolve(outputDirectory);
   await mkdir(output, { recursive: true });
-  const [beforeSources, afterSources] = await Promise.all([
-    loadProjectTextureSources(projectDirectory, beforeProject),
-    loadProjectTextureSources(projectDirectory, afterProject)
-  ]);
   const width = 600;
   const height = 600;
-  const beforePixels = renderProjectPoseWithSources(beforeProject, beforeSources, neutralMotionState, width, height);
-  const afterPixels = renderProjectPoseWithSources(afterProject, afterSources, neutralMotionState, width, height);
+  let beforePixels: ReturnType<typeof renderProjectPoseWithSources>;
+  let afterPixels: ReturnType<typeof renderProjectPoseWithSources>;
+  if (options.streamingTextures) {
+    beforePixels = await renderProjectDirectoryPoseLowMemory(projectDirectory, beforeProject, neutralMotionState, width, height);
+    afterPixels = await renderProjectDirectoryPoseLowMemory(projectDirectory, afterProject, neutralMotionState, width, height);
+  } else if (options.lowMemoryTextures) {
+    // Keep only one decoded layer map live at a time. Leaving this block drops the before map
+    // reference before loading after; JavaScript GC is intentionally not assumed to be immediate.
+    {
+      const beforeSources = await loadProjectTextureSourcesLowMemory(projectDirectory, beforeProject);
+      beforePixels = renderProjectPoseWithSources(beforeProject, beforeSources, neutralMotionState, width, height);
+    }
+    {
+      const afterSources = await loadProjectTextureSourcesLowMemory(projectDirectory, afterProject);
+      afterPixels = renderProjectPoseWithSources(afterProject, afterSources, neutralMotionState, width, height);
+    }
+  } else {
+    const [beforeSources, afterSources] = await Promise.all([
+      loadProjectTextureSources(projectDirectory, beforeProject),
+      loadProjectTextureSources(projectDirectory, afterProject)
+    ]);
+    beforePixels = renderProjectPoseWithSources(beforeProject, beforeSources, neutralMotionState, width, height);
+    afterPixels = renderProjectPoseWithSources(afterProject, afterSources, neutralMotionState, width, height);
+  }
   const beforePath = join(output, "neutral-before.png");
   const afterPath = join(output, "neutral-after.png");
   const differencePath = join(output, "neutral-difference.png");

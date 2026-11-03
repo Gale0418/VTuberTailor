@@ -161,6 +161,44 @@ export async function loadProjectTextureSources(projectDirectory: string, projec
   return new Map(entries);
 }
 
+/**
+ * Loads only textures needed by the renderer while keeping public loader semantics unchanged.
+ *
+ * Visible layers are always loaded. A hidden layer is also loaded when it is the direct mask
+ * target of another layer, because renderProjectPoseWithSources uses it to build a clip mask.
+ * Each resolved texture path is decoded once, sequentially, so shared materials do not multiply
+ * raw-buffer peak memory and all render paths still receive the same layer-id -> PixelBuffer map.
+ * The renderer treats those shared PixelBuffers as read-only.
+ */
+export async function loadProjectTextureSourcesLowMemory(projectDirectory: string, project: PuppetLoomProject): Promise<Map<string, PixelBuffer>> {
+  const root = resolve(projectDirectory);
+  // authoredLayersInRenderOrder excludes hidden children, so their clip targets cannot be
+  // observed by this renderer. Keep the explicit clip exception for every rendered layer,
+  // including a hidden clip layer used by a visible child.
+  const clipLayerIds = new Set(project.layers
+    .filter((layer) => layer.visible !== false)
+    .flatMap((layer) => layer.clipLayerId ? [layer.clipLayerId] : []));
+  const selectedLayers = project.layers.filter((layer) => layer.visible !== false || clipLayerIds.has(layer.id));
+  for (const layer of selectedLayers) {
+    if (layer.visible !== false && layer.clipLayerId && !project.layers.some((candidate) => candidate.id === layer.clipLayerId)) {
+      throw new Error(`可見圖層 ${layer.id} 指向不存在的 clip 圖層 ${layer.clipLayerId}。`);
+    }
+  }
+  const decodedByPath = new Map<string, PixelBuffer>();
+  const sources = new Map<string, PixelBuffer>();
+  for (const layer of selectedLayers) {
+    const texturePath = resolve(join(root, layer.texture));
+    let pixels = decodedByPath.get(texturePath);
+    if (!pixels) {
+      const image = await sharp(texturePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      pixels = { width: image.info.width, height: image.info.height, data: new Uint8ClampedArray(image.data) };
+      decodedByPath.set(texturePath, pixels);
+    }
+    sources.set(layer.id, pixels);
+  }
+  return sources;
+}
+
 export async function renderProjectDirectoryPose(
   projectDirectory: string,
   project: PuppetLoomProject,
@@ -179,5 +217,111 @@ export async function renderProjectDirectoryPosePng(
   height: number
 ): Promise<Buffer> {
   const pixels = await renderProjectDirectoryPose(projectDirectory, project, state, width, height);
+  return sharp(Buffer.from(pixels.data), { raw: { width, height, channels: 4 } }).png().toBuffer();
+}
+
+/**
+ * Opt-in directory renderer with a bounded decoded-texture working set.
+ *
+ * A visible layer is decoded only while its triangles are rasterized. A direct
+ * clip target is decoded once to produce its coverage mask, then its pixel
+ * buffer is released before the child texture is decoded. Clip masks remain
+ * resident because they are already width*height render-sized data and may be
+ * shared by several children. This deliberately mirrors
+ * renderProjectPoseWithSources instead of changing the default Map-based path.
+ */
+export async function renderProjectDirectoryPoseLowMemory(
+  projectDirectory: string,
+  project: PuppetLoomProject,
+  state: MotionState,
+  width: number,
+  height: number
+): Promise<PixelBuffer> {
+  const renderState = featureGatedMotionState(project, state);
+  const output: PixelBuffer = { width, height, data: new Uint8ClampedArray(width * height * 4) };
+  const scale = Math.min(width / project.canvas.width, height / project.canvas.height);
+  const drawnWidth = project.canvas.width * scale;
+  const drawnHeight = project.canvas.height * scale;
+  const offsetX = (width - drawnWidth) * 0.5;
+  const offsetY = (height - drawnHeight) * 0.5;
+  const toPixel = (point: Point): Point => ({ x: offsetX + point.x * project.canvas.width * scale, y: offsetY + point.y * project.canvas.height * scale });
+  const root = resolve(projectDirectory);
+  const clipMasks = new Map<string, Uint8Array>();
+  const layersById = new Map(project.layers.map((layer) => [layer.id, layer]));
+
+  const withTexture = async <T>(layer: PuppetLoomProject["layers"][number], callback: (source: PixelBuffer) => T | Promise<T>): Promise<T> => {
+    const image = await sharp(resolve(join(root, layer.texture))).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    // Keep a view over sharp's buffer rather than copying another full RGBA
+    // allocation. The view is invalidated in finally before this scope exits.
+    const source: PixelBuffer = {
+      width: image.info.width,
+      height: image.info.height,
+      data: new Uint8ClampedArray(image.data.buffer, image.data.byteOffset, image.data.byteLength)
+    };
+    try {
+      return await callback(source);
+    } finally {
+      // PixelBuffer is internal to this opt-in path. Dropping the large view
+      // makes the decoded image eligible for collection between layers.
+      source.data = new Uint8ClampedArray(0);
+    }
+  };
+
+  const maskFor = async (layerId: string, ownerLayerId: string): Promise<Uint8Array> => {
+    const existing = clipMasks.get(layerId);
+    if (existing) return existing;
+    const layer = layersById.get(layerId);
+    if (!layer) throw new Error(`可見圖層 ${ownerLayerId} 指向不存在的 clip 圖層 ${layerId}。`);
+    const mask = await withTexture(layer, async (source) => {
+      const next = new Uint8Array(width * height);
+      const points = deformedPoints(project, layer, renderState);
+      for (let index = 0; index < layer.mesh.triangles.length; index += 3) {
+        const indices = layer.mesh.triangles.slice(index, index + 3);
+        if (indices.length !== 3) continue;
+        const raster = indices.map((pointIndex) => ({ ...toPixel(points[pointIndex]!), u: layer.mesh.uvs[pointIndex]!.x, v: layer.mesh.uvs[pointIndex]!.y })) as [RasterPoint, RasterPoint, RasterPoint];
+        rasterTriangle(output, source, raster, 1, undefined, "normal", next);
+      }
+      return next;
+    });
+    clipMasks.set(layerId, mask);
+    return mask;
+  };
+
+  for (const layer of authoredLayersInRenderOrder(project, renderState)) {
+    const opacity = authoredOpacityFor(project, layer, renderState);
+    if (opacity <= 0) continue;
+    // Decode the direct clip first so its source can be released before the
+    // visible layer source is loaded. This intentionally preserves the
+    // existing renderer's direct-clip semantics (including hidden clips).
+    const clip = layer.clipLayerId ? await maskFor(layer.clipLayerId, layer.id) : undefined;
+    await withTexture(layer, (source) => {
+      const points = deformedPoints(project, layer, renderState);
+      const coverage = new Uint8Array(width * height);
+      for (let index = 0; index < layer.mesh.triangles.length; index += 3) {
+        const ia = layer.mesh.triangles[index];
+        const ib = layer.mesh.triangles[index + 1];
+        const ic = layer.mesh.triangles[index + 2];
+        if (ia === undefined || ib === undefined || ic === undefined) continue;
+        const pa = points[ia]; const pb = points[ib]; const pc = points[ic];
+        const ua = layer.mesh.uvs[ia]; const ub = layer.mesh.uvs[ib]; const uc = layer.mesh.uvs[ic];
+        if (!pa || !pb || !pc || !ua || !ub || !uc) continue;
+        const a = { ...toPixel(pa), u: ua.x, v: ua.y };
+        const b = { ...toPixel(pb), u: ub.x, v: ub.y };
+        const c = { ...toPixel(pc), u: uc.x, v: uc.y };
+        rasterTriangle(output, source, [a, b, c], opacity, clip, normalizedBlendMode(layer.blendMode), undefined, coverage);
+      }
+    });
+  }
+  return output;
+}
+
+export async function renderProjectDirectoryPosePngLowMemory(
+  projectDirectory: string,
+  project: PuppetLoomProject,
+  state: MotionState,
+  width: number,
+  height: number
+): Promise<Buffer> {
+  const pixels = await renderProjectDirectoryPoseLowMemory(projectDirectory, project, state, width, height);
   return sharp(Buffer.from(pixels.data), { raw: { width, height, channels: 4 } }).png().toBuffer();
 }

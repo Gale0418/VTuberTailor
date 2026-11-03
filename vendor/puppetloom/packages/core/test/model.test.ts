@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deformedPoints, neutralMotionState } from "../src/deform.js";
+import { deformPoint, deformedPoints, neutralMotionState } from "../src/deform.js";
 import { createDefaultAuthoringModel, evaluateLayerAuthoring, ModelPhysicsController, resolveMotionState, resolveParameterValues } from "../src/model.js";
 import { parsePuppetLoomProject } from "../src/project-format.js";
 import { authoredLayersInRenderOrder, authoredOpacityFor } from "../src/render-contract.js";
@@ -112,6 +112,83 @@ describe("AI authoring model", () => {
     const points = deformedPoints(value, attached, { ...neutralMotionState, parameters: { turn: 1 } });
     expect(points[1]!.x).toBeCloseTo(-1);
     expect(points[1]!.y).toBeCloseTo(0);
+  });
+
+  it("keeps neck roll attachment anatomical when a parent XY deformer moves the layer", () => {
+    const neck = { ...layer("neck"), role: "neck" as const, weights: { head: 1, body: 0, gaze: 0, physics: 0 } };
+    const value = project({
+      parameters: [{ id: "shift", name: "Shift", group: "Custom", kind: "continuous", min: 0, default: 0, max: 1 }],
+      deformers: [{ id: "parent", name: "Parent", kind: "rotation", pivot: { x: 0, y: 0 } }],
+      bindings: [{
+        id: "shift-parent", parameterIds: ["shift"], target: { kind: "deformer", id: "parent" },
+        keyforms: [
+          { values: [0], transform: { translation: { x: 0, y: 0 } } },
+          { values: [1], transform: { translation: { x: 0, y: 0.4 } } }
+        ]
+      }]
+    }, [{ ...neck, deformerId: "parent" }]);
+    value.runtime.envelope.headRollDegrees = 20;
+    const pivot = { x: 0.5, y: 0.42 };
+    const point = (shift: number, roll: number, index: number) => deformedPoints(value, value.layers[0]!, {
+      ...neutralMotionState, headRoll: roll, parameters: { shift }
+    })[index]!;
+    const angularDelta = (from: { x: number; y: number }, to: { x: number; y: number }) =>
+      Math.atan2(to.y - pivot.y, to.x - pivot.x) - Math.atan2(from.y - pivot.y, from.x - pivot.x);
+    const topNeutral = point(0, 0, 0), topNeutralRolled = point(0, 1, 0);
+    const topShifted = point(1, 0, 0), topShiftedRolled = point(1, 1, 0);
+    expect(angularDelta(topNeutral, topNeutralRolled)).toBeCloseTo(20 * Math.PI / 180, 8);
+    expect(angularDelta(topShifted, topShiftedRolled)).toBeCloseTo(angularDelta(topNeutral, topNeutralRolled), 8);
+
+    const bottomShifted = point(1, 0, 2), bottomShiftedRolled = point(1, 1, 2);
+    expect(Math.hypot(bottomShiftedRolled.x - bottomShifted.x, bottomShiftedRolled.y - bottomShifted.y)).toBeLessThan(1e-10);
+
+    const arbitrary = { x: 0, y: 0.4 };
+    const fallback = deformPoint(value, value.layers[0]!, arbitrary, { ...neutralMotionState, headRoll: 1 });
+    const indexed = deformPoint(value, value.layers[0]!, arbitrary, { ...neutralMotionState, headRoll: 1 }, 0);
+    expect(angularDelta(arbitrary, fallback)).toBeLessThan(angularDelta(arbitrary, indexed) - 0.05);
+    expect(angularDelta(arbitrary, indexed)).toBeCloseTo(20 * Math.PI / 180, 8);
+  });
+
+  it("keeps a dynamic head surface continuous across the body-sway boundary", () => {
+    const neck = { ...layer("neck"), headPoseMode: "keyforms" as const };
+    const model = {
+      ...createDefaultAuthoringModel(),
+      parameters: [
+        { id: "yaw", name: "Yaw", group: "Head", kind: "continuous" as const, min: -1, default: 0, max: 1, semantic: "head-yaw" as const },
+        { id: "pitch", name: "Pitch", group: "Head", kind: "continuous" as const, min: -1, default: 0, max: 1, semantic: "head-pitch" as const },
+        { id: "body", name: "Body", group: "Body", kind: "continuous" as const, min: -1, default: 0, max: 1, semantic: "body-sway" as const }
+      ],
+      bindings: [
+        {
+          id: "head-surface", parameterIds: ["yaw", "pitch"] as [string, string], target: { kind: "layer" as const, id: neck.id },
+          keyforms: [
+            { values: [-1, -1] as [number, number], meshPointDeltas: { "0": { x: 0, y: 0 }, "1": { x: 10, y: 0 }, "2": { x: 0, y: 0 }, "3": { x: 10, y: 0 } } },
+            { values: [1, -1] as [number, number], meshPointDeltas: { "0": { x: 0, y: 0 }, "1": { x: 10, y: 0 }, "2": { x: 0, y: 0 }, "3": { x: 10, y: 0 } } },
+            { values: [-1, 1] as [number, number], meshPointDeltas: { "0": { x: 0, y: 0 }, "1": { x: 10, y: 0 }, "2": { x: 0, y: 0 }, "3": { x: 10, y: 0 } } },
+            { values: [1, 1] as [number, number], meshPointDeltas: { "0": { x: 0, y: 0 }, "1": { x: 10, y: 0 }, "2": { x: 0, y: 0 }, "3": { x: 10, y: 0 } } }
+          ]
+        },
+        {
+          id: "body-sway", parameterIds: ["body"] as [string], target: { kind: "layer" as const, id: neck.id },
+          keyforms: [
+            { values: [-1] as [number], meshPointDeltas: { "0": { x: -1, y: 0 } } },
+            { values: [1] as [number], meshPointDeltas: { "0": { x: 1, y: 0 } } }
+          ]
+        }
+      ]
+    } satisfies AuthoringModel;
+    const value = project(model, [neck]);
+    const pointAt = (body: number) => evaluateLayerAuthoring(value, neck, {
+      ...neutralMotionState, parameters: { yaw: 0, pitch: 0, body }
+    }).points[0]!;
+    const before = pointAt(-0.35 + 1e-7);
+    const after = pointAt(-0.35 - 1e-7);
+
+    expect(Math.abs(before.x - after.x)).toBeLessThan(1e-4);
+    expect(Math.abs(before.y - after.y)).toBeLessThan(1e-8);
+    expect(pointAt(0)).toEqual({ x: 0, y: 0 });
+    expect(pointAt(-1).x).toBeGreaterThanOrEqual(-1);
+    expect(pointAt(-1).x).toBeLessThanOrEqual(0);
   });
 
   it("migrates a real legacy-shaped document in memory without requiring model data", () => {

@@ -402,7 +402,15 @@ export function deformResolvedPoint(project: PuppetLoomProject, layer: LayerBind
   }
 
   if (headLayerWeight > 0) {
-    const neckV = layer.role === "neck" ? clamp((base.y - layer.bounds.y) / Math.max(1e-6, layer.bounds.height), 0, 1) : 0;
+    // base 已套用父變形；附著權重需固定在中立網格，避免隨姿態漂移。
+    const restPoint = vertexIndex !== undefined
+      && Number.isInteger(vertexIndex)
+      && vertexIndex >= 0
+      && vertexIndex < layer.mesh.points.length
+      ? layer.mesh.points[vertexIndex]
+      : undefined;
+    const anatomicalBase = restPoint ?? base;
+    const neckV = layer.role === "neck" ? clamp((anatomicalBase.y - layer.bounds.y) / Math.max(1e-6, layer.bounds.height), 0, 1) : 0;
     const headWeight = headLayerWeight * (layer.role === "neck" ? 1 - smoothstep01(neckV) : 1);
     if (project.runtime.poseField && layer.headPoseMode !== "keyforms") {
       const blinkModified = (layer.role === "eyeWhite" || layer.role === "iris" || layer.role === "eyelash") && eyeBlink > 0;

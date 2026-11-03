@@ -24,9 +24,175 @@ export function nativeCubismDrawableId(sourceId:string) {
   if(/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(sourceId))return sourceId;
   return `ArtMeshPL_${sourceId.replace(/[^A-Za-z0-9_]/g,'_').slice(0,38)}_${createHash('sha256').update(sourceId).digest('hex').slice(0,12)}`;
 }
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const moduleRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const nativeExporterSources = ['Main.kt', 'Physics.kt', 'CoreProbe.kt', 'EditorProfile.kt'];
+
+function ancestorDirectories(start: string): string[] {
+  const result: string[] = [];
+  let current = resolve(start);
+  while (true) {
+    result.push(current);
+    const parent = dirname(current);
+    if (parent === current) return result;
+    current = parent;
+  }
+}
+
+async function hasNativeExporterSources(candidate: string): Promise<boolean> {
+  try {
+    await Promise.all(nativeExporterSources.map(file => access(join(candidate, 'tools/cubism-exporter', file))));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Find the source root independently of the package/bundle directory layout. */
+export function nativeExporterSearchRoots(configPath?: string): string[] {
+  return configPath
+    ? [...ancestorDirectories(dirname(resolve(configPath))), ...ancestorDirectories(moduleRoot)]
+    : ancestorDirectories(moduleRoot);
+}
+
+async function resolveNativeExporterRoot(configPath?: string): Promise<string> {
+  const candidates = nativeExporterSearchRoots(configPath);
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate) || !await hasNativeExporterSources(candidate)) continue;
+    seen.add(candidate);
+    if (!configPath) {
+      try {
+        await access(join(candidate, 'runtime/cubism-exporter/config.json'));
+      } catch {
+        continue;
+      }
+    }
+    return candidate;
+  }
+  throw new Error('找不到 Cubism exporter 原始碼根目錄；請確認套件資源或 PUPPETLOOM_NATIVE_EXPORT_CONFIG。');
+}
 type Sample = { positions: number[]; opacity: number; order: number };
 type Axis = { id: string; keys: number[] };
+
+export type NativeLayerCompaction = {
+  project: PuppetLoomProject;
+  layer: LayerBinding;
+  /** Old vertex index -> compact vertex index; -1 means the source vertex was not referenced. */
+  oldToNew: number[];
+  /** Compact vertex index -> old vertex index. */
+  newToOld: number[];
+  compacted: boolean;
+  reason?: string;
+};
+
+const knownInfluenceChannels = new Set([
+  'face', 'skull', 'head', 'body', 'gaze', 'physics', 'pin', 'headAttachment', 'physicsRelease'
+]);
+
+function nativeLayerFallback(layer: LayerBinding, project: PuppetLoomProject, reason: string): NativeLayerCompaction {
+  return { project, layer, oldToNew: layer.mesh.points.map((_, index) => index), newToOld: layer.mesh.points.map((_, index) => index), compacted: false, reason };
+}
+
+function remapNativeSparseDeltas(
+  deltas: Record<string, { x: number; y: number }>,
+  oldToNew: number[]
+): Record<string, { x: number; y: number }> | undefined {
+  const result: Record<string, { x: number; y: number }> = {};
+  for (const [rawIndex, point] of Object.entries(deltas)) {
+    const oldIndex = Number(rawIndex);
+    if (!Number.isInteger(oldIndex) || oldIndex < 0 || oldIndex >= oldToNew.length) return undefined;
+    const compactIndex = oldToNew[oldIndex]!;
+    // A legal sparse delta on an orphan vertex cannot affect any exported triangle,
+    // compact head-surface lookup, or sampled drawable output. It is intentionally
+    // omitted from this temporary view; future canonical edits remain untouched.
+    if (compactIndex < 0) continue;
+    result[String(compactIndex)] = { x: point.x, y: point.y };
+  }
+  return result;
+}
+
+/**
+ * Builds an export-only mesh view with unreferenced vertices removed.
+ *
+ * This never mutates the canonical project. Every vertex-indexed input consumed by
+ * the native sampler is remapped together. Features whose index semantics are not
+ * proven here (hair strands, moving collision, unknown channels/mesh fields and
+ * invalid sparse deltas) return the original layer instead of being partially copied.
+ */
+export function compactNativeLayerForExport(project: PuppetLoomProject, layer: LayerBinding): NativeLayerCompaction {
+  if (layer.hairStrands?.length) return nativeLayerFallback(layer, project, 'hairStrands 具有頂點索引，native export 暫不壓縮。');
+  if (project.runtime.constraints?.collisions.some(rule => rule.movingLayerIds.includes(layer.id))) {
+    return nativeLayerFallback(layer, project, 'moving collision 會改變頂點結果，native export 暫不壓縮。');
+  }
+  const mesh = layer.mesh as LayerBinding['mesh'] & Record<string, unknown>;
+  const unknownMeshFields = Object.keys(mesh).filter(key => !['topology', 'rows', 'cols', 'art', 'points', 'uvs', 'triangles', 'influences'].includes(key));
+  if (unknownMeshFields.length) return nativeLayerFallback(layer, project, `未知 vertex-indexed mesh 欄位：${unknownMeshFields.join(',')}。`);
+  // Legacy schema parsing defaults missing topology to grid. Only explicit art
+  // topology has a proven triangle-owned vertex index model for this view.
+  if (mesh.topology !== 'art') return nativeLayerFallback(layer, project, '非明確 art topology（含 legacy/undefined/grid）暫不壓縮。');
+  if (mesh.points.length !== mesh.uvs.length || mesh.points.length === 0 || mesh.triangles.length === 0 || mesh.triangles.length % 3 !== 0) {
+    return nativeLayerFallback(layer, project, 'mesh points/UV/triangles 結構不完整。');
+  }
+
+  const referenced = new Set<number>();
+  for (const index of mesh.triangles) {
+    if (!Number.isInteger(index) || index < 0 || index >= mesh.points.length) return nativeLayerFallback(layer, project, 'triangle vertex index 非法。');
+    referenced.add(index);
+  }
+  if (referenced.size === mesh.points.length) return nativeLayerFallback(layer, project, '沒有未引用頂點可移除。');
+  if (referenced.size === 0) return nativeLayerFallback(layer, project, 'mesh 沒有可引用頂點。');
+
+  const newToOld = [...referenced].sort((a, b) => a - b);
+  const oldToNew = mesh.points.map(() => -1);
+  newToOld.forEach((oldIndex, compactIndex) => { oldToNew[oldIndex] = compactIndex; });
+  const influences = mesh.influences;
+  if (influences) {
+    for (const [channel, values] of Object.entries(influences)) {
+      if (!knownInfluenceChannels.has(channel) || !values || values.length !== mesh.points.length) {
+        return nativeLayerFallback(layer, project, `未知或長度不符的 influence channel：${channel}。`);
+      }
+    }
+  }
+  for (const binding of project.model.bindings) {
+    if (binding.target.kind === 'deformer' && binding.keyforms.some(keyform => keyform.meshPointDeltas && Object.keys(keyform.meshPointDeltas).length)) {
+      return nativeLayerFallback(layer, project, `deformer binding ${binding.id} 含未定義的 meshPointDeltas。`);
+    }
+    if (binding.target.kind !== 'layer' || binding.target.id !== layer.id) continue;
+    for (const keyform of binding.keyforms) {
+      if (!keyform.meshPointDeltas) continue;
+      if (!remapNativeSparseDeltas(keyform.meshPointDeltas, oldToNew)) {
+        return nativeLayerFallback(layer, project, `binding ${binding.id} 的 meshPointDeltas 指向未引用頂點。`);
+      }
+    }
+  }
+
+  const compactMesh = {
+    ...mesh,
+    points: newToOld.map(index => ({ ...mesh.points[index]! })),
+    uvs: newToOld.map(index => ({ ...mesh.uvs[index]! })),
+    triangles: mesh.triangles.map(index => oldToNew[index]!),
+    ...(influences ? {
+      influences: Object.fromEntries(Object.entries(influences).map(([channel, values]) => [channel, newToOld.map(index => values![index]!)]) )
+    } : {})
+  } as LayerBinding['mesh'];
+  const compactLayer: LayerBinding = { ...layer, mesh: compactMesh };
+  const compactBindings = project.model.bindings.map(binding => {
+    if (binding.target.kind !== 'layer' || binding.target.id !== layer.id) return binding;
+    return {
+      ...binding,
+      keyforms: binding.keyforms.map(keyform => ({
+        ...keyform,
+        ...(keyform.meshPointDeltas ? { meshPointDeltas: remapNativeSparseDeltas(keyform.meshPointDeltas, oldToNew)! } : {})
+      }))
+    };
+  });
+  const compactProject: PuppetLoomProject = {
+    ...project,
+    layers: project.layers.map(candidate => candidate.id === layer.id ? compactLayer : candidate),
+    model: { ...project.model, bindings: compactBindings }
+  };
+  return { project: compactProject, layer: compactLayer, oldToNew, newToOld, compacted: true };
+}
 
 /** CMO3 reconstructs image UVs from the art's undeformed affine placement.
  * Keep neutral/authored deformation in keyforms, never in this image mapping. */
@@ -144,10 +310,12 @@ export async function exportNativeCubism(directory:string,outputDirectory:string
   if(!['5.3','5.4'].includes(editorVersion)||!['4.2','5.0','5.3'].includes(runtimeVersion))throw new Error('不支持的 Cubism 工程或运行时版本。');
   const projectRoot=resolve(directory),output=resolve(outputDirectory);
   try {await access(output);throw new Error('导出目录已存在，请选择新目录。');}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
-  const configPath=process.env.PUPPETLOOM_NATIVE_EXPORT_CONFIG??join(root,'runtime/cubism-exporter/config.json');
+  const configuredConfigPath=process.env.PUPPETLOOM_NATIVE_EXPORT_CONFIG;
+  const root=await resolveNativeExporterRoot(configuredConfigPath);
+  const configPath=configuredConfigPath??join(root,'runtime/cubism-exporter/config.json');
   const config=JSON.parse(await readFile(configPath,'utf8').catch(()=>{throw new Error('请先运行 node scripts/setup-cubism-exporter.mjs 配置直接导出依赖。');})) as {java:string;classpath:string;sourceSha256:string};
   const sourceHash=createHash('sha256');
-  for(const file of ['Main.kt','Physics.kt','CoreProbe.kt','EditorProfile.kt'])sourceHash.update(await readFile(join(root,'tools/cubism-exporter',file)));
+  for(const file of nativeExporterSources)sourceHash.update(await readFile(join(root,'tools/cubism-exporter',file)));
   if(sourceHash.digest('hex')!==config.sourceSha256)throw new Error('格式转换器源码已更新，请重新运行 setup-cubism-exporter.mjs。');
   const project=await loadProject(projectRoot),calibration=await loadCalibration(projectRoot);
   if(await loadCalibrationDraft(projectRoot))throw new Error('存在未保存草稿，请先保存后导出。');
@@ -174,18 +342,23 @@ export async function exportNativeCubism(directory:string,outputDirectory:string
     }
     for(const [index,layer]of allLayers.entries()) {
       options.onProgress?.(`转换 ${index+1}/${allLayers.length}：${layer.id}`);
-      const baked=bakeNativeLayer(project,layer,tolerance);
+      // Mesh compaction is deliberately scoped to this temporary export view;
+      // canonical project data and its revision hash remain untouched.
+      const compaction=compactNativeLayerForExport(project,layer);
+      const exportProject=compaction.project,exportLayer=compaction.layer;
+      const baked=bakeNativeLayer(exportProject,exportLayer,tolerance);
       if(!['normal','multiply','add'].includes(layer.blendMode))throw new Error(`${layer.id} 的混合模式 ${layer.blendMode} 暂不支持直接导出，未替换成普通混合。`);
       const placement=atlas.placements.get(layer.id)!;
-      const fileName=`layer-${index}.bin`,columns=layer.mesh.points.length*2+2;
+      const fileName=`layer-${index}.bin`,columns=exportLayer.mesh.points.length*2+2;
       const buffer=Buffer.allocUnsafe(baked.cells.length*columns*4);
       let cursor=0;for(const cell of baked.cells)for(const v of [...cell.positions,cell.opacity,cell.order]){buffer.writeFloatLE(v,cursor);cursor+=4;}
       await writeFile(join(work,fileName),buffer);
-      if(layer.clipLayerId&&!drawableIds[layer.clipLayerId])throw new Error(`${layer.id} 的裁剪图层未包含在导出模型中。`);
-      layers.push({id:drawableIds[layer.id],sourceId:layer.id,name:layer.sourceName,positions:nativeArtPositions(project,layer),uvs:layer.mesh.uvs.flatMap(p=>[(placement.x+p.x*placement.width)/atlas.size,(placement.y+p.y*placement.height)/atlas.size]),triangles:layer.mesh.triangles,
-        masks:layer.clipLayerId?[drawableIds[layer.clipLayerId]]:[],blend:layer.blendMode==='multiply'?'MultiplyPremultiplied':layer.blendMode==='add'?'AdditivePremultiplied':'Normal',
+      if(exportLayer.clipLayerId&&!drawableIds[exportLayer.clipLayerId])throw new Error(`${layer.id} 的裁剪图层未包含在导出模型中。`);
+      layers.push({id:drawableIds[layer.id],sourceId:layer.id,name:layer.sourceName,positions:nativeArtPositions(exportProject,exportLayer),uvs:exportLayer.mesh.uvs.flatMap(p=>[(placement.x+p.x*placement.width)/atlas.size,(placement.y+p.y*placement.height)/atlas.size]),triangles:exportLayer.mesh.triangles,
+        masks:exportLayer.clipLayerId?[drawableIds[exportLayer.clipLayerId]]:[],blend:layer.blendMode==='multiply'?'MultiplyPremultiplied':layer.blendMode==='add'?'AdditivePremultiplied':'Normal',
         texture:placement.page,axes:baked.axes.map(a=>({...a,sourceId:a.id,id:parameterIds[a.id],keys:a.keys.map(v=>v*100)})),data:fileName,count:baked.cells.length,opacity:baked.base.opacity,order:baked.base.order});
-      reviews.push({layer:layer.id,axes:baked.axes.map(a=>({id:a.id,keys:a.keys.length})),keyforms:baked.cells.length,maxError:baked.maxError,samplesChecked:baked.samplesChecked});
+      reviews.push({layer:layer.id,axes:baked.axes.map(a=>({id:a.id,keys:a.keys.length})),keyforms:baked.cells.length,maxError:baked.maxError,samplesChecked:baked.samplesChecked,
+        meshCompaction:{compacted:compaction.compacted,sourceVertices:layer.mesh.points.length,exportVertices:exportLayer.mesh.points.length,...(compaction.reason?{reason:compaction.reason}:{})}});
     }
     const input={version:1,name:'model',editorVersion,runtimeVersion,width:project.canvas.width,height:project.canvas.height,parameterScale:100,parameterIds,drawableIds,parameters:project.model.parameters.map(p=>({...p,sourceId:p.id,id:parameterIds[p.id],min:p.min*100,max:p.max*100,default:p.default*100})),textures,layers,physics:sidecars.physics?.document};
     const inputPath=join(work,'model.json');await writeFile(inputPath,JSON.stringify(input));

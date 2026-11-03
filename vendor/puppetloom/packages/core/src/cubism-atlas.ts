@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import sharp from 'sharp';
 
 /** PSD2Live AtlasPacker's deterministic shelf layout, with unscaled source pixels.
@@ -9,6 +10,8 @@ const EDGE_SEED_ALPHA = 8;
 
 interface AtlasRaster {
   id: string;
+  /** Every layer ID that can safely sample this exact decoded raster. */
+  ids: string[];
   width: number;
   height: number;
   pixels: Buffer;
@@ -124,16 +127,38 @@ export async function packCubismAtlas(items: { id: string; png: Buffer }[], requ
   if (!Number.isInteger(padding) || padding < 0) {
     throw new Error('Cubism atlas padding 必须是非负整数。');
   }
-  const rasters = await Promise.all(items.map(async item => {
+  const rasterGroups = new Map<string, AtlasRaster[]>();
+  const rasters: AtlasRaster[] = [];
+  const itemIds = new Set<string>();
+  for (const item of items) {
+    if (itemIds.has(item.id)) throw new Error(`Cubism 图集 layer ID 重复：${item.id}`);
+    itemIds.add(item.id);
+  }
+  // Cloned/generated layers may intentionally retain one immutable texture while
+  // using different meshes, orders, or masks. Pack one tile for each exact
+  // decoded RGBA raster, then alias every layer ID to that placement. Include
+  // dimensions in the key and verify bytes on a hash match so a hash collision
+  // cannot merge different artwork. Decode sequentially so duplicate raw
+  // buffers are released before the next layer is decoded.
+  for (const item of items) {
     const decoded = await sharp(item.png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     if (!decoded.info.width || !decoded.info.height) throw new Error(`${item.id} 缺少图像尺寸`);
-    return {
-      id: item.id,
-      width: decoded.info.width,
-      height: decoded.info.height,
-      pixels: decoded.data,
-    } satisfies AtlasRaster;
-  }));
+    const width = decoded.info.width, height = decoded.info.height, pixels = decoded.data;
+    const digest = createHash('sha256').update(pixels).digest('hex');
+    const key = `${width}x${height}:${digest}`;
+    const candidates = rasterGroups.get(key) ?? [];
+    const duplicate = candidates.find(candidate => candidate.width === width
+      && candidate.height === height && candidate.pixels.equals(pixels));
+    if (duplicate) {
+      duplicate.ids.push(item.id);
+      if (item.id < duplicate.id) duplicate.id = item.id;
+    } else {
+      const raster = { id: item.id, ids: [item.id], width, height, pixels } satisfies AtlasRaster;
+      candidates.push(raster);
+      rasters.push(raster);
+    }
+    rasterGroups.set(key, candidates);
+  }
   rasters.sort((a, b) => b.height - a.height || b.width - a.width || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const largest = Math.max(requestedSize, ...rasters.map(item => Math.max(item.width, item.height) + padding * 2));
   const size = 2 ** Math.ceil(Math.log2(largest));
@@ -171,7 +196,8 @@ export async function packCubismAtlas(items: { id: string; png: Buffer }[], requ
       paddedPixels.copy(page, targetStart, sourceStart, sourceStart + paddedWidth * 4);
     }
 
-    placements.set(item.id, { page: pageIndex, x, y, width: item.width, height: item.height });
+    const placement = { page: pageIndex, x, y, width: item.width, height: item.height };
+    for (const id of item.ids.sort()) placements.set(id, placement);
     x += item.width + padding * 2;
     rowHeight = Math.max(rowHeight, item.height);
   }

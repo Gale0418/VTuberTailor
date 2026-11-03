@@ -66,10 +66,42 @@ function barycentric(point: Point, a: Point, b: Point, c: Point): [number, numbe
   return weights?.every((weight) => weight >= -1e-7) ? weights : undefined;
 }
 
-function sampleLocation(mesh: MeshBinding, uv: Point): BarycentricSample {
-  let closest: BarycentricSample | undefined;
-  let closestTriangle: { indices: [number, number, number]; vertices: [Point, Point, Point] } | undefined;
-  let closestDistance = Number.POSITIVE_INFINITY;
+interface BoundaryCandidate {
+  sample: BarycentricSample;
+  triangle: { indices: [number, number, number]; vertices: [Point, Point, Point] };
+  distance: number;
+  edgeLength: number;
+  edgeKey: string;
+  boundary: boolean;
+}
+
+const boundaryEdgeCache = new WeakMap<number[], boolean[]>();
+
+function boundaryEdgeFlags(mesh: MeshBinding): boolean[] {
+  const cached = boundaryEdgeCache.get(mesh.triangles);
+  if (cached) return cached;
+  const keys: Array<string | undefined> = [];
+  const counts = new Map<string, number>();
+  for (let triangle = 0; triangle < mesh.triangles.length; triangle += 3) {
+    const ids = [mesh.triangles[triangle], mesh.triangles[triangle + 1], mesh.triangles[triangle + 2]] as const;
+    if (ids.some((id) => id === undefined)) {
+      keys.push(undefined, undefined, undefined);
+      continue;
+    }
+    for (let edge = 0; edge < 3; edge += 1) {
+      const key = [ids[edge]!, ids[(edge + 1) % 3]!].sort((left, right) => left - right).join(":");
+      keys.push(key);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  const flags = keys.map((key) => key !== undefined && counts.get(key) === 1);
+  boundaryEdgeCache.set(mesh.triangles, flags);
+  return flags;
+}
+
+function collectBoundaryCandidates(mesh: MeshBinding, uv: Point): { inside?: BarycentricSample; candidates: BoundaryCandidate[] } {
+  const candidates: BoundaryCandidate[] = [];
+  const edgeCounts = new Map<string, number>();
   for (let triangle = 0; triangle < mesh.triangles.length; triangle += 3) {
     const ia = mesh.triangles[triangle];
     const ib = mesh.triangles[triangle + 1];
@@ -80,7 +112,7 @@ function sampleLocation(mesh: MeshBinding, uv: Point): BarycentricSample {
     const c = mesh.uvs[ic];
     if (!a || !b || !c) continue;
     const weights = barycentric(uv, a, b, c);
-    if (weights) return { indices: [ia, ib, ic], weights };
+    if (weights) return { inside: { indices: [ia, ib, ic], weights }, candidates };
     const vertices = [a, b, c] as const;
     const ids = [ia, ib, ic] as const;
     for (let edge = 0; edge < 3; edge += 1) {
@@ -91,26 +123,43 @@ function sampleLocation(mesh: MeshBinding, uv: Point): BarycentricSample {
       const lengthSquared = dx * dx + dy * dy;
       const amount = lengthSquared <= 1e-12 ? 0 : Math.max(0, Math.min(1, ((uv.x - start.x) * dx + (uv.y - start.y) * dy) / lengthSquared));
       const distance = (uv.x - (start.x + dx * amount)) ** 2 + (uv.y - (start.y + dy * amount)) ** 2;
-      if (distance >= closestDistance) continue;
       const edgeWeights: [number, number, number] = [0, 0, 0];
       edgeWeights[edge] = 1 - amount;
       edgeWeights[(edge + 1) % 3] = amount;
-      closest = { indices: [ids[0], ids[1], ids[2]], weights: edgeWeights };
-      closestTriangle = { indices: [ids[0], ids[1], ids[2]], vertices: [vertices[0], vertices[1], vertices[2]] };
-      closestDistance = distance;
+      const edgeKey = [ids[edge]!, ids[(edge + 1) % 3]!].sort((left, right) => left - right).join(":");
+      edgeCounts.set(edgeKey, (edgeCounts.get(edgeKey) ?? 0) + 1);
+      candidates.push({
+        sample: { indices: [ids[0], ids[1], ids[2]], weights: edgeWeights },
+        triangle: { indices: [ids[0], ids[1], ids[2]], vertices: [vertices[0], vertices[1], vertices[2]] },
+        distance,
+        edgeLength: Math.sqrt(lengthSquared),
+        edgeKey,
+        boundary: false
+      });
     }
   }
 
-  if (closestTriangle) {
-    const weights = barycentricWeights(uv, ...closestTriangle.vertices);
+  return { candidates: candidates.map((candidate) => ({
+    ...candidate,
+    boundary: edgeCounts.get(candidate.edgeKey) === 1
+  })) };
+}
+
+function sampleLocation(mesh: MeshBinding, uv: Point): BarycentricSample {
+  const { inside, candidates } = collectBoundaryCandidates(mesh, uv);
+  if (inside) return inside;
+  const closest = candidates.reduce<BoundaryCandidate | undefined>((best, candidate) =>
+    !best || candidate.distance < best.distance ? candidate : best, undefined);
+  if (closest) {
+    const weights = barycentricWeights(uv, ...closest.triangle.vertices);
     // A denser remesh can place a new silhouette vertex just outside the old
     // polygonal chord. A small affine extrapolation preserves smooth authored
     // weights there; large extrapolations remain clamped to the nearest edge.
     if (weights?.every((weight) => weight >= -0.35 && weight <= 1.35)) {
-      return { indices: closestTriangle.indices, weights };
+      return { indices: closest.triangle.indices, weights };
     }
+    return closest.sample;
   }
-  if (closest) return closest;
 
   let nearest = 0;
   let nearestDistance = Number.POSITIVE_INFINITY;
@@ -133,6 +182,113 @@ export function meshPointAtUv(mesh: MeshBinding, uv: Point): Point {
     x: point.x + mesh.points[index]!.x * sample.weights[slot]!,
     y: point.y + mesh.points[index]!.y * sample.weights[slot]!
   }), { x: 0, y: 0 });
+}
+
+/**
+ * Samples a dynamic head surface without the extrapolation-to-clamp jump.
+ *
+ * Remesh/influence callers intentionally keep using sampleLocation above. This
+ * variant is only for the runtime head lookup: it eases a small affine
+ * extrapolation into the nearest edge, then clamps farther outside points.
+ */
+function samplePoint(mesh: MeshBinding, sample: BarycentricSample): Point {
+  return sample.indices.reduce((point, index, slot) => ({
+    x: point.x + mesh.points[index]!.x * sample.weights[slot]!,
+    y: point.y + mesh.points[index]!.y * sample.weights[slot]!
+  }), { x: 0, y: 0 });
+}
+
+function smoothBoundarySample(mesh: MeshBinding, uv: Point): Point {
+  for (let triangle = 0; triangle < mesh.triangles.length; triangle += 3) {
+    const ia = mesh.triangles[triangle];
+    const ib = mesh.triangles[triangle + 1];
+    const ic = mesh.triangles[triangle + 2];
+    if (ia === undefined || ib === undefined || ic === undefined) continue;
+    const a = mesh.uvs[ia];
+    const b = mesh.uvs[ib];
+    const c = mesh.uvs[ic];
+    if (a && b && c) {
+      const weights = barycentric(uv, a, b, c);
+      if (weights) return samplePoint(mesh, { indices: [ia, ib, ic], weights });
+    }
+  }
+
+  const boundary = boundaryEdgeFlags(mesh);
+  const nearestCandidates: Array<{ triangle: number; edge: number; distance: number; edgeLength: number }> = [];
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  let closestEdgeLength = 0;
+  for (let triangle = 0; triangle < mesh.triangles.length; triangle += 3) {
+    const ids = [mesh.triangles[triangle], mesh.triangles[triangle + 1], mesh.triangles[triangle + 2]] as const;
+    const vertices = [mesh.uvs[ids[0]!], mesh.uvs[ids[1]!], mesh.uvs[ids[2]!]] as const;
+    if (!vertices[0] || !vertices[1] || !vertices[2]) continue;
+    for (let edge = 0; edge < 3; edge += 1) {
+      if (!boundary[triangle + edge]) continue;
+      const start = vertices[edge]!;
+      const end = vertices[(edge + 1) % 3]!;
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const lengthSquared = dx * dx + dy * dy;
+      const amount = lengthSquared <= 1e-12 ? 0 : Math.max(0, Math.min(1,
+        ((uv.x - start.x) * dx + (uv.y - start.y) * dy) / lengthSquared));
+      const distance = (uv.x - (start.x + dx * amount)) ** 2
+        + (uv.y - (start.y + dy * amount)) ** 2;
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        closestEdgeLength = Math.sqrt(lengthSquared);
+      }
+      nearestCandidates.push({ triangle, edge, distance, edgeLength: Math.sqrt(lengthSquared) });
+    }
+  }
+  if (!Number.isFinite(nearestDistance)) return samplePoint(mesh, sampleLocation(mesh, uv));
+
+  nearestCandidates.sort((left, right) => left.distance - right.distance);
+  nearestCandidates.length = Math.min(nearestCandidates.length, 4);
+  const transitionDistance = Math.max(closestEdgeLength * 0.01, 1e-9);
+  const nearestDistanceRoot = Math.sqrt(nearestDistance);
+  let totalWeight = 0;
+  let result = { x: 0, y: 0 };
+  for (const candidate of nearestCandidates) {
+    const triangle = candidate.triangle;
+    const edge = candidate.edge;
+    const ids = [mesh.triangles[triangle], mesh.triangles[triangle + 1], mesh.triangles[triangle + 2]] as const;
+    const vertices = [mesh.uvs[ids[0]!], mesh.uvs[ids[1]!], mesh.uvs[ids[2]!]] as const;
+    if (!vertices[0] || !vertices[1] || !vertices[2]) continue;
+    const distanceDelta = Math.sqrt(candidate.distance) - nearestDistanceRoot;
+    if (distanceDelta >= transitionDistance) continue;
+    const relative = Math.max(0, distanceDelta / transitionDistance);
+    const candidateWeight = 1 - relative * relative * (3 - 2 * relative);
+    const start = vertices[edge]!;
+    const end = vertices[(edge + 1) % 3]!;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lengthSquared = dx * dx + dy * dy;
+    const amount = lengthSquared <= 1e-12 ? 0 : Math.max(0, Math.min(1,
+      ((uv.x - start.x) * dx + (uv.y - start.y) * dy) / lengthSquared));
+    const edgeWeights: [number, number, number] = [0, 0, 0];
+    edgeWeights[edge] = 1 - amount;
+    edgeWeights[(edge + 1) % 3] = amount;
+    const affine = barycentricWeights(uv, vertices[0]!, vertices[1]!, vertices[2]!);
+    const outside = affine?.every(Number.isFinite)
+      ? Math.max(0, ...affine.map((weight) => Math.max(-weight, weight - 1))) : 1;
+    const blend = outside <= 0.20 ? 0 : outside >= 0.35 ? 1
+      : ((outside - 0.20) / 0.15) ** 2 * (3 - 2 * ((outside - 0.20) / 0.15));
+    const weights = affine && outside < 0.35
+      ? affine.map((weight, index) => weight * (1 - blend) + edgeWeights[index]! * blend) as [number, number, number]
+      : edgeWeights;
+    const point = {
+      x: mesh.points[ids[0]!]!.x * weights[0]! + mesh.points[ids[1]!]!.x * weights[1]! + mesh.points[ids[2]!]!.x * weights[2]!,
+      y: mesh.points[ids[0]!]!.y * weights[0]! + mesh.points[ids[1]!]!.y * weights[1]! + mesh.points[ids[2]!]!.y * weights[2]!
+    };
+    result = { x: result.x + point.x * candidateWeight, y: result.y + point.y * candidateWeight };
+    totalWeight += candidateWeight;
+  }
+  return totalWeight > 0 ? { x: result.x / totalWeight, y: result.y / totalWeight }
+    : samplePoint(mesh, sampleLocation(mesh, uv));
+}
+
+/** Maps a dynamic head surface with a finite, continuous boundary transition. */
+export function meshPointAtUvContinuous(mesh: MeshBinding, uv: Point): Point {
+  return smoothBoundarySample(mesh, uv);
 }
 
 export function reprojectMeshInfluences(source: MeshBinding, target: MeshBinding): MeshInfluences {

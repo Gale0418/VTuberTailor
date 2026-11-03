@@ -1,4 +1,4 @@
-import { calibrationOverridesSchema } from "./schema.js";
+import { calibrationOverridesSchema, generatedLayerCloneOperationSchema, layerTriangleSplitOperationSchema } from "./schema.js";
 import { parsePuppetLoomProject } from "./project-format.js";
 import { remeshArtMesh } from "./art-mesh.js";
 import { frontHairPhysicsMask } from "./front-hair-geometry.js";
@@ -7,6 +7,8 @@ import { makeGridMesh, reprojectMeshInfluences } from "./mesh.js";
 import type {
   CalibrationOverrides,
   CalibrationPatch,
+  GeneratedLayerCloneOperation,
+  LayerTriangleSplitOperation,
   LayerBinding,
   LayerCalibrationOverride,
   MeshInfluenceChannel,
@@ -236,6 +238,224 @@ const interactiveHairInfluenceCache = new WeakMap<MeshBinding, WeakMap<HairStran
   physicsRelease: number[];
   physics: number[];
 }>>();
+
+function validateSplitSourceMesh(layer: LayerBinding): number {
+  const mesh = layer.mesh;
+  if (mesh.points.length !== mesh.uvs.length) throw new Error(`${layer.sourceName} 的 points 与 UV 数量不一致，不能分割网格。`);
+  if (mesh.triangles.length === 0 || mesh.triangles.length % 3 !== 0) throw new Error(`${layer.sourceName} 的三角形索引数量必须是 3 的正整数倍。`);
+  for (let index = 0; index < mesh.triangles.length; index += 3) {
+    const triangle = mesh.triangles.slice(index, index + 3);
+    if (new Set(triangle).size !== 3) throw new Error(`${layer.sourceName} 含有退化三角形 ${index / 3}。`);
+    if (triangle.some((pointIndex) => pointIndex < 0 || pointIndex >= mesh.points.length)) {
+      throw new Error(`${layer.sourceName} 的三角形 ${index / 3} 引用了不存在的顶点。`);
+    }
+  }
+  return mesh.triangles.length / 3;
+}
+
+function validateCloneMesh(mesh: MeshBinding, label: string): void {
+  if (mesh.points.length !== mesh.uvs.length) throw new Error(`${label} 的 points 与 UV 数量不一致。`);
+  if (mesh.triangles.length === 0 || mesh.triangles.length % 3 !== 0) throw new Error(`${label} 的三角形索引数量必须是 3 的正整数倍。`);
+  for (let index = 0; index < mesh.triangles.length; index += 3) {
+    const triangle = mesh.triangles.slice(index, index + 3);
+    if (new Set(triangle).size !== 3) throw new Error(`${label} 含有退化三角形 ${index / 3}。`);
+    if (triangle.some((pointIndex) => pointIndex < 0 || pointIndex >= mesh.points.length)) {
+      throw new Error(`${label} 的三角形 ${index / 3} 引用了不存在的顶点。`);
+    }
+    const a = mesh.points[triangle[0]!]!;
+    const b = mesh.points[triangle[1]!]!;
+    const c = mesh.points[triangle[2]!]!;
+    const area2 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    if (Math.abs(area2) <= 1e-12) throw new Error(`${label} 含有零面积三角形 ${index / 3}。`);
+  }
+  for (const [channel, values] of Object.entries(mesh.influences ?? {})) {
+    if (values && values.length !== mesh.points.length) throw new Error(`${label} 的 ${channel} 权重数量与网格不一致。`);
+  }
+}
+
+function validateSplitLayerReferences(project: PuppetLoomProject, source: LayerBinding): void {
+  const blockers: string[] = [];
+  for (const layer of project.layers) {
+    if (layer.id === source.id) continue;
+    if (layer.parentLayerId === source.id) blockers.push(`${layer.id}.parentLayerId`);
+    if (layer.clipLayerId === source.id) blockers.push(`${layer.id}.clipLayerId`);
+  }
+  for (const rule of project.runtime.constraints?.collisions ?? []) {
+    if (rule.movingLayerIds.includes(source.id)) blockers.push(`collision:${rule.id}.movingLayerIds`);
+    if (rule.colliderLayerIds.includes(source.id)) blockers.push(`collision:${rule.id}.colliderLayerIds`);
+  }
+  for (const group of project.production?.variants ?? []) {
+    for (const option of group.options) if (option.layerIds.includes(source.id)) blockers.push(`variant:${group.id}/${option.id}`);
+  }
+  for (const prop of project.production?.props ?? []) if (prop.layerIds.includes(source.id)) blockers.push(`prop:${prop.id}`);
+  for (const binding of project.model.bindings) {
+    if (binding.target.kind === "layer" && binding.keyforms.some((keyform) => keyform.drawOrderOffset !== undefined)) {
+      blockers.push(`binding:${binding.id}.drawOrderOffset`);
+    }
+  }
+  // BehaviorTrack targets are parameter/expression-only by schema; layer
+  // bindings are copied below and are the only motion graph references.
+  if (blockers.length > 0) throw new Error(`图层 ${source.id} 被其他层级、裁剪、碰撞或生产状态引用，无法安全隐藏原图层：${blockers.join(", ")}`);
+}
+
+/**
+ * Builds a pure calibration override that splits one generated layer into
+ * multiple triangle-owned layers without touching texture bytes. This helper
+ * does not inspect filesystem provenance; callers must use
+ * prepareLayerTriangleSplitPatch before persisting the returned overrides.
+ * With no target semantic override this is a geometry-only split; setting
+ * `semantic` explicitly opts into role/side/visibility behavior changes.
+ *
+ * This deliberately returns the existing assetLayers/model/layers override
+ * shape. It does not pretend that an AuthoringPatch can persist new layers:
+ * saveAuthoringPatch only serializes overrides for layers that already existed
+ * in its input project.
+ */
+export function buildLayerTriangleSplitOverrides(project: PuppetLoomProject, rawOperation: LayerTriangleSplitOperation): CalibrationOverrides {
+  const operation = layerTriangleSplitOperationSchema.parse(rawOperation) as LayerTriangleSplitOperation;
+  const base = parsePuppetLoomProject(project);
+  const source = base.layers.find((candidate) => candidate.id === operation.sourceLayerId);
+  if (!source) throw new Error(`找不到要分割的图层：${operation.sourceLayerId}`);
+  if (!source.generatedAsset) throw new Error(`图层 ${source.id} 没有 immutable generatedAsset provenance，拒绝分割。`);
+  validateSplitLayerReferences(base, source);
+
+  const existingLayerIds = new Set(base.layers.map((layer) => layer.id));
+  const targetLayerIds = new Set<string>();
+  for (const target of operation.targets) {
+    if (target.layerId === source.id) throw new Error(`分割目标图层不能复用源图层 ID：${target.layerId}`);
+    if (existingLayerIds.has(target.layerId) || targetLayerIds.has(target.layerId)) throw new Error(`分割目标图层 ID 已被占用或重复：${target.layerId}`);
+    targetLayerIds.add(target.layerId);
+  }
+
+  const triangleCount = validateSplitSourceMesh(source);
+  const claimed = new Uint8Array(triangleCount);
+  const targetTriangleIndices = operation.targets.map((target) => {
+    const indices = [...target.triangleIndices].sort((left, right) => left - right);
+    for (const triangleIndex of indices) {
+      if (triangleIndex < 0 || triangleIndex >= triangleCount) throw new Error(`分割目标 ${target.layerId} 引用了不存在的三角形 ${triangleIndex}。`);
+      if (claimed[triangleIndex]) throw new Error(`三角形 ${triangleIndex} 被多个分割目标重复声明。`);
+      claimed[triangleIndex] = 1;
+    }
+    return indices;
+  });
+  const missing = [...claimed].findIndex((claimedTriangle) => claimedTriangle === 0);
+  if (missing >= 0) throw new Error(`分割遗漏了三角形 ${missing}，拒绝产生不完整网格。`);
+
+  const targetLayers: Record<string, LayerBinding> = {};
+  const layerOverrides: NonNullable<CalibrationOverrides["layers"]> = {};
+  // Calibration applies assetLayers after the base array and therefore cannot
+  // literally splice them into place. Normalize the stable `(order, index)`
+  // draw sequence to consecutive orders so the appended snapshots render as
+  // an in-place replacement, including when neighbouring layers share order.
+  const stableLayers = base.layers
+    .map((layer, index) => ({ layer, index }))
+    .sort((left, right) => left.layer.order - right.layer.order || left.index - right.index);
+  const sourceStableIndex = stableLayers.findIndex((entry) => entry.layer.id === source.id);
+  if (sourceStableIndex < 0) throw new Error(`无法在稳定绘制顺序中定位源图层：${source.id}`);
+  const targetOrders = operation.targets.map((_, index) => sourceStableIndex + index);
+  for (const [stableIndex, entry] of stableLayers.entries()) {
+    if (entry.layer.id === source.id) {
+      layerOverrides[source.id] = { visible: false, order: targetOrders[0]! };
+      continue;
+    }
+    const order = stableIndex < sourceStableIndex ? stableIndex : stableIndex + operation.targets.length - 1;
+    layerOverrides[entry.layer.id] = { order };
+  }
+
+  for (const [targetIndex, target] of operation.targets.entries()) {
+    const triangleIndices = targetTriangleIndices[targetIndex]!;
+    const layer = clone(source);
+    layer.id = target.layerId;
+    layer.sourceName = target.sourceName ?? `${source.sourceName} · ${target.layerId}`;
+    layer.sourcePath = [...source.sourcePath, "split", target.layerId];
+    if (source.sourceLayerId) layer.sourceLayerId = `${source.sourceLayerId}/split/${target.layerId}`;
+    layer.role = target.semantic?.role ?? source.role;
+    layer.side = target.semantic?.side ?? source.side;
+    layer.order = targetOrders[targetIndex]!;
+    const visible = target.semantic?.visible ?? source.visible;
+    if (visible === undefined) delete layer.visible;
+    else layer.visible = visible;
+    layer.mesh = {
+      ...clone(source.mesh),
+      triangles: triangleIndices.flatMap((triangleIndex) => source.mesh.triangles.slice(triangleIndex * 3, triangleIndex * 3 + 3))
+    };
+    targetLayers[layer.id] = layer;
+  }
+
+  const model = clone(base.model);
+  const sourceBindings = model.bindings.filter((binding) => binding.target.kind === "layer" && binding.target.id === source.id);
+  const bindingIds = new Set(model.bindings.map((binding) => binding.id));
+  for (const target of operation.targets) {
+    for (const binding of sourceBindings) {
+      const id = `${binding.id}/split/${target.layerId}`;
+      if (bindingIds.has(id)) throw new Error(`分割动作绑定 ID 已被占用：${id}`);
+      bindingIds.add(id);
+      model.bindings.push({ ...clone(binding), id, target: { kind: "layer", id: target.layerId } });
+    }
+  }
+
+  return { assetLayers: targetLayers, model, layers: layerOverrides };
+}
+
+/**
+ * Builds calibration overrides that add copies of an immutable generated
+ * layer. Unlike triangle splitting, this leaves the source layer untouched;
+ * each target may provide a complete schema-valid mesh and explicit order.
+ */
+export function buildGeneratedLayerCloneOverrides(project: PuppetLoomProject, rawOperation: GeneratedLayerCloneOperation): CalibrationOverrides {
+  const operation = generatedLayerCloneOperationSchema.parse(rawOperation) as GeneratedLayerCloneOperation;
+  const base = parsePuppetLoomProject(project);
+  const source = base.layers.find((candidate) => candidate.id === operation.sourceLayerId);
+  if (!source) throw new Error(`找不到要複製的圖層：${operation.sourceLayerId}`);
+  if (!source.generatedAsset) throw new Error(`圖層 ${source.id} 沒有 immutable generatedAsset provenance，拒絕複製。`);
+  validateCloneMesh(source.mesh, source.sourceName);
+
+  const existingLayerIds = new Set(base.layers.map((layer) => layer.id));
+  const targetLayerIds = new Set<string>();
+  const targetLayers: Record<string, LayerBinding> = {};
+  const model = clone(base.model);
+  const sourceBindings = model.bindings.filter((binding) => binding.target.kind === "layer" && binding.target.id === source.id);
+  const bindingIds = new Set(model.bindings.map((binding) => binding.id));
+  for (const target of operation.targets) {
+    if (existingLayerIds.has(target.layerId) || targetLayerIds.has(target.layerId)) {
+      throw new Error(`複製目標圖層 ID 已被占用或重複：${target.layerId}`);
+    }
+    targetLayerIds.add(target.layerId);
+    const mesh = target.mesh ? clone(target.mesh) : clone(source.mesh);
+    if (source.hairStrands) {
+      throw new Error(`圖層 ${source.id} 含有以頂點索引的 hairStrands；clone 沒有全域 ID／頂點 remap 路徑，拒絕複製。`);
+    }
+    validateCloneMesh(mesh, target.layerId);
+    const layer = clone(source);
+    layer.id = target.layerId;
+    layer.sourceName = target.sourceName ?? `${source.sourceName} · ${target.layerId}`;
+    layer.sourcePath = [...source.sourcePath, "clone", target.layerId];
+    delete layer.sourceLayerId;
+    layer.mesh = mesh;
+    if (target.order !== undefined) layer.order = target.order;
+    const role = target.semantic?.role;
+    if (role) layer.role = role;
+    const side = target.semantic?.side;
+    if (side) layer.side = side;
+    if (target.semantic?.visible === undefined) {
+      if (source.visible === undefined) delete layer.visible;
+    } else {
+      layer.visible = target.semantic.visible;
+    }
+    targetLayers[layer.id] = layer;
+    if (target.bindingMode === "copy" && target.mesh) {
+      throw new Error(`複製目標 ${target.layerId} 使用自訂 mesh，不能複製含頂點索引的 layer binding；請省略 bindingMode 或改用 none。`);
+    }
+    if (target.bindingMode !== "copy") continue;
+    for (const binding of sourceBindings) {
+      const id = `${binding.id}/clone/${target.layerId}`;
+      if (bindingIds.has(id)) throw new Error(`複製動作綁定 ID 已被占用：${id}`);
+      bindingIds.add(id);
+      model.bindings.push({ ...clone(binding), id, target: { kind: "layer", id: target.layerId } });
+    }
+  }
+  return { assetLayers: targetLayers, model };
+}
 
 function applyHairStrandInfluences(layer: LayerBinding, interactiveMesh?: MeshBinding): void {
   if (!layer.hairStrands || layer.hairStrands.length < 2) return;

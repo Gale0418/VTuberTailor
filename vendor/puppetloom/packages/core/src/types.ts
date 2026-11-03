@@ -637,6 +637,55 @@ export interface LayerCalibrationOverride {
   meshDensity?: { rows: number; cols: number };
 }
 
+/**
+ * Public calibration operation that clones an existing generated layer while
+ * assigning every source triangle to exactly one new layer. The source mesh's
+ * points, UVs, influences, texture and generatedAsset provenance are copied
+ * unchanged; only the triangle list differs per target.
+ */
+export interface LayerTriangleSplitTarget {
+  layerId: string;
+  triangleIndices: number[];
+  sourceName?: string;
+  /** Optional semantic override; setting this can change pose/visibility pixels. */
+  semantic?: {
+    role?: SemanticRole;
+    side?: Side;
+    /** Omitted means inherit the source layer's visibility. */
+    visible?: boolean;
+  };
+}
+
+export interface LayerTriangleSplitOperation {
+  sourceLayerId: string;
+  targets: LayerTriangleSplitTarget[];
+}
+
+/**
+ * Public calibration operation for adding generated-layer copies without
+ * hiding or mutating the source. Copies keep the source texture and
+ * immutable generatedAsset provenance; callers may provide a schema-valid
+ * mesh and draw order for each new layer.
+ */
+export interface GeneratedLayerCloneTarget {
+  layerId: string;
+  sourceName?: string;
+  mesh?: MeshBinding;
+  order?: number;
+  /** Defaults to none; indexed bindings are copied only when explicitly requested. */
+  bindingMode?: "none" | "copy";
+  semantic?: {
+    role?: SemanticRole;
+    side?: Side;
+    visible?: boolean;
+  };
+}
+
+export interface GeneratedLayerCloneOperation {
+  sourceLayerId: string;
+  targets: GeneratedLayerCloneTarget[];
+}
+
 export interface CalibrationOverrides {
   /** Complete generated layer snapshots, owned by revision history rather than the base project. */
   assetLayers?: Record<string, LayerBinding>;
@@ -669,6 +718,8 @@ export interface CalibrationDocument {
 export interface CalibrationPatch {
   /** Compare-and-swap precondition supplied by the editor or CLI. */
   baseRevision: number;
+  /** Optional base-project CAS precondition; omitted for legacy callers. */
+  expectedBaseProjectSha256?: string;
   label?: string;
   overrides: CalibrationOverrides;
   authoring?: AuthoringAudit;

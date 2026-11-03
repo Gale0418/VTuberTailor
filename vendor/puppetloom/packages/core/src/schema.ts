@@ -764,6 +764,42 @@ const layerCalibrationOverrideSchema = z.object({
   meshDensity: z.object({ rows: z.number().int().min(2).max(64), cols: z.number().int().min(2).max(64) }).optional()
 }).refine((override) => override.meshDetail === undefined || override.meshDensity === undefined, { message: "不能同时按细节尺度和行列数重建网格。" });
 
+/** Validated input for the public generated-layer triangle split operation. */
+export const layerTriangleSplitOperationSchema = z.object({
+  sourceLayerId: z.string().trim().min(1).max(128),
+  targets: z.array(z.object({
+    layerId: z.string().trim().min(1).max(128),
+    triangleIndices: z.array(z.number().int().nonnegative()).min(1),
+    sourceName: z.string().trim().min(1).max(256).optional(),
+    semantic: z.object({
+      role: z.enum([
+        "backHair", "frontHair", "sideHair", "face", "eyeWhite", "iris", "eyelash", "eyeClosed", "eyebrow", "nose", "mouth", "ear", "neck", "topWear", "bottomWear", "arm", "hand", "leg", "foot", "headwear", "tail", "accessory", "unknown"
+      ]).optional(),
+      side: z.enum(["left", "right", "center"]).optional(),
+      visible: z.boolean().optional()
+    }).strict().optional()
+  }).strict()).min(2).max(32)
+}).strict();
+
+/** Validated input for adding generated-layer copies with custom geometry. */
+export const generatedLayerCloneOperationSchema = z.object({
+  sourceLayerId: z.string().trim().min(1).max(128),
+  targets: z.array(z.object({
+    layerId: z.string().trim().min(1).max(128),
+    sourceName: z.string().trim().min(1).max(256).optional(),
+    mesh: meshSchema.optional(),
+    order: z.number().int().optional(),
+    bindingMode: z.enum(["none", "copy"]).optional(),
+    semantic: z.object({
+      role: z.enum([
+        "backHair", "frontHair", "sideHair", "face", "eyeWhite", "iris", "eyelash", "eyeClosed", "eyebrow", "nose", "mouth", "ear", "neck", "topWear", "bottomWear", "arm", "hand", "leg", "foot", "headwear", "tail", "accessory", "unknown"
+      ]).optional(),
+      side: z.enum(["left", "right", "center"]).optional(),
+      visible: z.boolean().optional()
+    }).strict().optional()
+  }).strict()).min(1).max(32)
+}).strict();
+
 export const calibrationOverridesSchema = z.object({
   assetLayers: z.record(z.string().min(1), puppetLoomProjectSchema.shape.layers.element).optional(),
   model: authoringModelSchema.optional(),
@@ -820,6 +856,7 @@ export const calibrationOverridesSchema = z.object({
 
 export const calibrationPatchSchema = z.object({
   baseRevision: z.number().int().nonnegative(),
+  expectedBaseProjectSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   label: z.string().trim().min(1).max(160).optional(),
   overrides: calibrationOverridesSchema,
   authoring: authoringAuditSchema.optional(),

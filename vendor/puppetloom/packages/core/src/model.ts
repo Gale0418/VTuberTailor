@@ -14,7 +14,7 @@ import type {
   PuppetLoomProject,
   WarpDeformer
 } from "./types.js";
-import { meshPointAtUv } from "./mesh.js";
+import { meshPointAtUvContinuous } from "./mesh.js";
 
 const semanticFields: Record<MotionParameterSemantic, keyof MotionState> = {
   "head-yaw": "headYaw",
@@ -517,7 +517,7 @@ function evaluateLayerAuthoringParameters(project: PuppetLoomProject, layer: Lay
       current.y = transformed.y;
     }
     if (headSurface && headWeights) {
-      const delta = meshPointAtUv(headSurface, current);
+      const delta = meshPointAtUvContinuous(headSurface, current);
       current.x += delta.x;
       current.y += delta.y;
       const transformed = transformPoint(current, layer.pivot, sampledTransform(headWeights));

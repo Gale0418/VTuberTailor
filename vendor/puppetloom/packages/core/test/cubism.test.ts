@@ -96,6 +96,40 @@ describe("Cubism official bridge", () => {
     expect(mapCubismParameterValue(blink, 1)).toBe(0);
   });
 
+  it("deduplicates CDI3 parameters while preserving side-specific blink names", () => {
+    const mappings = createCubismParameterMappings([
+      { id: "param-blink", name: "Blink", group: "Eyes", kind: "continuous", min: 0, default: 0, max: 1, semantic: "blink" },
+      { id: "param-blink-left", name: "Blink Left", group: "Eyes", kind: "continuous", min: 0, default: 0, max: 1, semantic: "blink-left" },
+      { id: "param-blink-right", name: "Blink Right", group: "Eyes", kind: "continuous", min: 0, default: 0, max: 1, semantic: "blink-right" }
+    ]);
+    mappings.find((mapping) => mapping.semantic === "blink-left")!.targetIds = ["ParamEyeLOpen"];
+    mappings.find((mapping) => mapping.semantic === "blink-right")!.targetIds = ["ParamEyeROpen"];
+
+    const sidecars = generateCubismSidecars(project(), mappings);
+
+    expect(sidecars.displayInfo.document.Parameters).toEqual([
+      { Id: "ParamEyeLOpen", GroupId: "GroupPuppetLoomEyes", Name: "Blink Left" },
+      { Id: "ParamEyeROpen", GroupId: "GroupPuppetLoomEyes", Name: "Blink Right" }
+    ]);
+
+    const reverseOrder = generateCubismSidecars(project(), [...mappings].reverse());
+    expect(reverseOrder.displayInfo.document.Parameters).toHaveLength(sidecars.displayInfo.document.Parameters.length);
+    expect(reverseOrder.displayInfo.document.Parameters).toEqual(expect.arrayContaining(sidecars.displayInfo.document.Parameters));
+
+    const equalTargetMappings = mappings.map((mapping) => ({
+      ...mapping,
+      ...(mapping.semantic === "blink" ? { targetIds: ["ParamEyeLOpen"] } : {})
+    }));
+    const equalTargetExpected = [
+      { Id: "ParamEyeLOpen", GroupId: "GroupPuppetLoomEyes", Name: "Blink Left" },
+      { Id: "ParamEyeROpen", GroupId: "GroupPuppetLoomEyes", Name: "Blink Right" }
+    ];
+    expect(generateCubismSidecars(project(), equalTargetMappings).displayInfo.document.Parameters).toEqual(equalTargetExpected);
+    const equalTargetReverse = generateCubismSidecars(project(), [...equalTargetMappings].reverse()).displayInfo.document.Parameters;
+    expect(equalTargetReverse).toHaveLength(equalTargetExpected.length);
+    expect(equalTargetReverse).toEqual(expect.arrayContaining(equalTargetExpected));
+  });
+
   it("reports geometry and procedural runtime gaps as blockers instead of fake success", () => {
     const model = createDefaultAuthoringModel();
     model.bindings.push({
@@ -126,6 +160,17 @@ describe("Cubism official bridge", () => {
     ]);
     expect(sidecars.motions[0]!.document.Meta).toMatchObject({ CurveCount: 1, TotalSegmentCount: 1, TotalPointCount: 4 });
     expect(sidecars.motions[0]!.document.Curves[0]!.Segments).toEqual([0, -30, 1, 0.333333, -30, 0.666667, 30, 1, 30]);
+  });
+
+  it("exports spring output as a scaled angle for Cubism physics", () => {
+    const model = createDefaultAuthoringModel();
+    model.physics.push({ id: "hair", name: "Hair", inputParameterId: "param-head-yaw", outputParameterId: "param-head-pitch", inputScale: 1, outputScale: 2.5, response: 10, damping: 1 });
+    const physics = generateCubismSidecars(project(model)).physics!.document;
+    expect(physics.Meta).toMatchObject({ PhysicsSettingCount: 1, TotalInputCount: 1, TotalOutputCount: 1, VertexCount: 2 });
+    expect(physics.PhysicsSettings[0]).toMatchObject({
+      Input: [{ Source: { Target: "Parameter", Id: "ParamAngleX" }, Type: "X", Weight: 100 }],
+      Output: [{ Destination: { Target: "Parameter", Id: "ParamAngleY" }, VertexIndex: 1, Type: "Angle", Scale: 2.5, Weight: 100 }]
+    });
   });
 
   it("distinguishes a stable Editor from the 1.1 editing API", async () => {

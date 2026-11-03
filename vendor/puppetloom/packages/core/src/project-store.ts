@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { applyCalibrationOverrides } from "./calibration.js";
+import { applyCalibrationOverrides, buildGeneratedLayerCloneOverrides, buildLayerTriangleSplitOverrides } from "./calibration.js";
+import { validateGeneratedAssetProvenance } from "./asset-provenance.js";
 import { PuppetLoomError } from "./errors.js";
 import { parsePuppetLoomProject } from "./project-format.js";
 import { applySafetyLimits } from "./safety.js";
-import { calibrationDocumentSchema, calibrationDraftSchema, calibrationOverridesSchema } from "./schema.js";
-import type { CalibrationDocument, CalibrationDraftDocument, CalibrationOverrides, PuppetLoomProject } from "./types.js";
+import { calibrationDocumentSchema, calibrationDraftSchema, calibrationOverridesSchema, generatedLayerCloneOperationSchema, layerTriangleSplitOperationSchema } from "./schema.js";
+import type { CalibrationDocument, CalibrationDraftDocument, CalibrationOverrides, CalibrationPatch, GeneratedLayerCloneOperation, LayerTriangleSplitOperation, PuppetLoomProject } from "./types.js";
 
 async function atomicJson(path: string, value: unknown): Promise<void> {
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -153,4 +154,69 @@ export async function loadProject(projectDirectory: string): Promise<PuppetLoomP
   const { project: base, hash } = await readBaseProject(root);
   const calibration = await readCalibrationDocument(root, hash);
   return applyStoredCalibration(base, calibration, root);
+}
+
+/**
+ * Loads the effective project and current revision, validates the source
+ * layer's immutable generatedAsset provenance, then constructs a
+ * triangle-split patch. This is the persistence entry point for split
+ * overrides; buildLayerTriangleSplitOverrides is intentionally a pure helper
+ * and does not verify filesystem assets. Callers should pass the returned CAS
+ * patch directly to saveCalibrationPatch; a concurrent revision change is
+ * still rejected there.
+ */
+export async function prepareLayerTriangleSplitPatch(
+  projectDirectory: string,
+  operation: LayerTriangleSplitOperation
+): Promise<CalibrationPatch> {
+  const normalizedOperation = layerTriangleSplitOperationSchema.parse(operation) as LayerTriangleSplitOperation;
+  const root = resolve(projectDirectory);
+  // Read a single calibration snapshot: loading the effective project and its
+  // revision independently can pair an old model with a newer revision and
+  // bypass the subsequent compare-and-swap protection.
+  const { project: base, hash } = await readBaseProject(root);
+  const calibration = await readCalibrationDocument(root, hash);
+  const project = await applyStoredCalibration(base, calibration, root);
+  const source = project.layers.find((layer) => layer.id === normalizedOperation.sourceLayerId);
+  if (source) await validateGeneratedAssetProvenance(root, project, source);
+  const overrides = buildLayerTriangleSplitOverrides(project, normalizedOperation);
+  parsePuppetLoomProject(applyCalibrationOverrides(project, overrides));
+  return {
+    baseRevision: calibration.revision,
+    expectedBaseProjectSha256: hash,
+    overrides
+  };
+}
+
+/**
+ * Loads one effective project/calibration snapshot, validates immutable source
+ * provenance, then prepares a CAS patch for adding generated-layer copies.
+ * Persist the returned patch with saveCalibrationPatch.
+ */
+export async function prepareGeneratedLayerClonePatch(
+  projectDirectory: string,
+  operation: GeneratedLayerCloneOperation
+): Promise<CalibrationPatch> {
+  const normalizedOperation = generatedLayerCloneOperationSchema.parse(operation) as GeneratedLayerCloneOperation;
+  const root = resolve(projectDirectory);
+  const { project: base, hash } = await readBaseProject(root);
+  const calibration = await readCalibrationDocument(root, hash);
+  const project = await applyStoredCalibration(base, calibration, root);
+  const source = project.layers.find((layer) => layer.id === normalizedOperation.sourceLayerId);
+  if (source) {
+    const provenance = await validateGeneratedAssetProvenance(root, project, source);
+    for (const target of normalizedOperation.targets) {
+      const mesh = target.mesh;
+      if (mesh?.art && (mesh.art.textureSize.width !== provenance.textureSize.width || mesh.art.textureSize.height !== provenance.textureSize.height)) {
+        throw new Error(`複製目標 ${target.layerId} 的 ArtMesh 紋理尺寸與 immutable registration 不符。`);
+      }
+    }
+  }
+  const overrides = buildGeneratedLayerCloneOverrides(project, normalizedOperation);
+  parsePuppetLoomProject(applyCalibrationOverrides(project, overrides));
+  return {
+    baseRevision: calibration.revision,
+    expectedBaseProjectSha256: hash,
+    overrides
+  };
 }

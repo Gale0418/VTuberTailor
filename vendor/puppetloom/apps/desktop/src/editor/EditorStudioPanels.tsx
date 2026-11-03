@@ -2,6 +2,7 @@ import type React from "react";
 import type { CalibrationSessionSummary, ModelPhysics, MotionState, PuppetLoomProject, SecondaryMotionPart } from "@puppetloom/core";
 import { isModelBehaviorAvailable, isModelExpressionAvailable, isMotionSemanticAvailable } from "@puppetloom/core/browser";
 import { Activity, ArrowDown, ArrowDownLeft, ArrowDownRight, ArrowLeft, ArrowLeftRight, ArrowRight, ArrowUp, ArrowUpDown, ArrowUpLeft, ArrowUpRight, Ban, Boxes, CheckCircle2, CircleAlert, CircleMinus, Drama, ExternalLink, Eye, EyeOff, Focus, Grid2X2, Heart, LayoutDashboard, Maximize2, Minimize2, Moon, Move3d, Pause, Play, Repeat2, RotateCcw, RotateCw, ScanEye, SlidersHorizontal, Smile, Sparkles, Sun, TriangleAlert, Waves, Workflow, type LucideIcon } from "lucide-react";
+import { previewParameterValue } from "./preview-state.js";
 
 export type StudioSection = "overview" | "rig" | "parameters" | "dynamics" | "preview";
 export type PreviewBackground = "checker" | "dark" | "light";
@@ -180,7 +181,7 @@ export function ParameterInspector({
   onExpression: (id: string, value: number) => void;
 }): React.JSX.Element {
   const parameter = project.model.parameters.find((candidate) => candidate.id === selectedId) ?? project.model.parameters[0];
-  const current = parameter ? state.parameters?.[parameter.id] ?? parameter.default : 0;
+  const current = previewParameterValue(project, state, selectedId);
   return <aside className="studio-side-panel studio-inspector parameter-inspector">
     <div className="panel-eyebrow">实时控制</div><h2>姿态与参数</h2>
     <section className="pose-controller"><div className="section-heading"><div><h3>九向头部控制</h3><small>与 Cubism 的二维参数控制器一致，点击即可检查组合姿态</small></div><output>{state.headYaw.toFixed(2)}, {state.headPitch.toFixed(2)}</output></div>

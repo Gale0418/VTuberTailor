@@ -90,16 +90,71 @@ describe('Cubism source texture atlas', () => {
     expect(packedMipSample - sourceMipSample).toBeGreaterThan(25);
   });
 
-  it('splits full pages and deterministically preserves every layer', async () => {
-    const png = await sharp({ create: { width: 240, height: 240, channels: 4, background: '#ffffff' } }).png().toBuffer();
-    const result = await packCubismAtlas([{ id: 'b', png }, { id: 'a', png }], 256);
-    expect(result.pngs).toHaveLength(2);
-    expect(result.placements.get('a')?.page).toBe(0);
-    expect(result.placements.get('b')?.page).toBe(1);
+  it('deduplicates identical decoded rasters deterministically', async () => {
+    const png = await sharp({ create: { width: 240, height: 240, channels: 4, background: '#ffffff' } }).png({ compressionLevel: 9 }).toBuffer();
+    const reencoded = await sharp(png).png({ compressionLevel: 0 }).toBuffer();
+    expect(reencoded).not.toEqual(png);
+    const result = await packCubismAtlas([{ id: 'b', png }, { id: 'a', png: reencoded }], 256);
+    const a = result.placements.get('a')!;
+    const b = result.placements.get('b')!;
+    expect(result.pngs).toHaveLength(1);
+    expect(b).toEqual(a);
+    expect([...result.placements.keys()]).toEqual(['a', 'b']);
+    const pixels = await sharp(result.pngs[a.page]).extract({ left: a.x, top: a.y, width: a.width, height: a.height }).raw().toBuffer();
+    expect(pixels).toEqual(await sharp(png).raw().toBuffer());
     expect([...result.placements.values()].every(p => p.x >= 16 && p.y >= 16)).toBe(true);
+    const reversed = await packCubismAtlas([{ id: 'a', png: reencoded }, { id: 'b', png }], 256);
+    expect(reversed.pngs).toEqual(result.pngs);
+    expect([...reversed.placements.keys()]).toEqual(['a', 'b']);
+    expect(reversed.placements.get('a')).toEqual(a);
+    expect(reversed.placements.get('b')).toEqual(b);
+  });
+
+  it('rejects duplicate layer IDs before decoding any image', async () => {
+    await expect(packCubismAtlas([
+      { id: 'duplicate', png: Buffer.from('not-a-png') },
+      { id: 'duplicate', png: Buffer.from('also-not-a-png') },
+    ], 256)).rejects.toThrow('layer ID 重复：duplicate');
+  });
+
+  it('does not merge different dimensions or any decoded RGBA byte', async () => {
+    const base = Buffer.alloc(4 * 3 * 4, 0);
+    base.set([40, 80, 120, 255], 0);
+    const changed = Buffer.from(base);
+    changed[4] = 41;
+    const sameSize = await sharp(base, { raw: { width: 4, height: 3, channels: 4 } }).png().toBuffer();
+    const differentPixels = await sharp(changed, { raw: { width: 4, height: 3, channels: 4 } }).png().toBuffer();
+    const differentSize = await sharp(Buffer.alloc(3 * 3 * 4, 0), { raw: { width: 3, height: 3, channels: 4 } }).png().toBuffer();
+    const result = await packCubismAtlas([
+      { id: 'same', png: sameSize },
+      { id: 'pixel-different', png: differentPixels },
+      { id: 'dimension-different', png: differentSize },
+    ], 256);
+    expect(result.placements.get('same')).not.toEqual(result.placements.get('pixel-different'));
+    expect(result.placements.get('same')).not.toEqual(result.placements.get('dimension-different'));
     await expect(packCubismAtlas([], 358)).rejects.toThrow('二次幂');
     const pixel = await sharp({ create: { width: 1, height: 1, channels: 4, background: '#ffffff' } }).png().toBuffer();
     await expect(packCubismAtlas([{ id: 'negative-padding', png: pixel }], 256, -1)).rejects.toThrow('padding 必须是非负整数');
     await expect(packCubismAtlas([{ id: 'fractional-padding', png: pixel }], 256, 1.5)).rejects.toThrow('padding 必须是非负整数');
+  });
+
+  it('keeps distinct rasters on separate pages while aliasing each duplicate', async () => {
+    const makePng = (color: string) => sharp({ create: { width: 200, height: 200, channels: 4, background: color } }).png().toBuffer();
+    const first = await makePng('#e04040');
+    const second = await makePng('#4040e0');
+    const result = await packCubismAtlas([
+      { id: 'first', png: first },
+      { id: 'first-alias', png: first },
+      { id: 'second', png: second },
+    ], 256);
+    expect(result.pngs).toHaveLength(2);
+    const firstPlacement = result.placements.get('first')!;
+    expect(result.placements.get('first-alias')).toEqual(firstPlacement);
+    const secondPlacement = result.placements.get('second')!;
+    expect(secondPlacement.page).not.toBe(firstPlacement.page);
+    for (const [png, placement] of [[first, firstPlacement], [second, secondPlacement]] as const) {
+      const pixels = await sharp(result.pngs[placement.page]).extract({ left: placement.x, top: placement.y, width: placement.width, height: placement.height }).raw().toBuffer();
+      expect(pixels).toEqual(await sharp(png).raw().toBuffer());
+    }
   });
 });

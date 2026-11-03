@@ -30,6 +30,11 @@ import type {
   RigLevel
 } from "./types.js";
 
+export interface CalibrationSaveOptions {
+  /** Explicitly use the visibility-aware sequential texture loader for evidence. */
+  lowMemoryTextures?: boolean;
+}
+
 export function projectFingerprint(project: PuppetLoomProject): string {
   return createHash("sha256").update(JSON.stringify(project)).digest("hex");
 }
@@ -54,6 +59,26 @@ function rebuiltMeshLayerIds(before: PuppetLoomProject, after: PuppetLoomProject
       return previous !== undefined && meshLayoutFingerprint(previous.mesh) !== meshLayoutFingerprint(layer.mesh);
     })
     .map((layer) => layer.id);
+}
+
+function layerIdsWithIndexedKeyformDeltas(project: PuppetLoomProject): Set<string> {
+  return new Set(project.model.bindings
+    .filter((binding) => binding.target.kind === "layer"
+      && binding.keyforms.some((keyform) => Object.keys(keyform.meshPointDeltas ?? {}).length > 0))
+    .map((binding) => binding.target.id));
+}
+
+function rejectUnmigratedLayerKeyformDeltas(
+  rebuiltLayers: string[],
+  after: PuppetLoomProject
+): void {
+  const indexedLayers = layerIdsWithIndexedKeyformDeltas(after);
+  const affected = rebuiltLayers.filter((layerId) => indexedLayers.has(layerId));
+  if (affected.length === 0) return;
+  throw new PuppetLoomError(
+    "INVALID_INPUT",
+    `图层 ${affected.join("、")} 的网格结构已改变，但仍有 layer binding keyform 顶点增量；缺少可证明的 vertex remap，本次校准没有写入。请先执行显式 mesh migration；旧 revision 仍可读取或恢复。`
+  );
 }
 
 async function atomicJson(path: string, value: unknown): Promise<void> {
@@ -205,7 +230,12 @@ export async function recoverCalibrationOperations(projectDirectory: string): Pr
   }
 }
 
-async function commitCalibrationPatch(root: string, patch: CalibrationPatch, replacementOverrides?: CalibrationOverrides): Promise<CalibrationSaveResult> {
+async function commitCalibrationPatch(
+  root: string,
+  patch: CalibrationPatch,
+  replacementOverrides?: CalibrationOverrides,
+  options: CalibrationSaveOptions = {}
+): Promise<CalibrationSaveResult> {
   const operationId = randomUUID();
   const lock = await acquireCalibrationLock(root, operationId);
   let operation: CalibrationOperationDocument | undefined;
@@ -221,6 +251,9 @@ async function commitCalibrationPatch(root: string, patch: CalibrationPatch, rep
       calibrationInitialized = false;
     }
     const current = await readCalibrationDocument(root, hash);
+    if (patch.expectedBaseProjectSha256 !== undefined && patch.expectedBaseProjectSha256 !== hash) {
+      throw new PuppetLoomError("INVALID_PROJECT", "基础项目已改变，校准补丁的 base-project SHA 不再匹配；本次修改没有写入。" );
+    }
     await recoverCalibrationOperationsUnlocked(root, current);
     if (current.baseProjectSha256 !== hash && current.revision > 0) throw new PuppetLoomError("INVALID_PROJECT", "基础项目已改变，不能继续追加校准。" );
     if (patch.baseRevision !== current.revision) {
@@ -236,6 +269,13 @@ async function commitCalibrationPatch(root: string, patch: CalibrationPatch, rep
       throw new PuppetLoomError("INVALID_INPUT", "当前校准已经是目标状态，没有创建新版本。" );
     }
     const rebuiltLayers = rebuiltMeshLayerIds(before, after);
+    // A replacement override is used only by restoreCalibrationRevision. A
+    // complete model snapshot remains the existing public hand-off for callers
+    // that manually remap keyforms; accepting it does not validate the remap
+    // contents and must not be treated as a correctness proof.
+    if (replacementOverrides === undefined && patch.overrides.model === undefined) {
+      rejectUnmigratedLayerKeyformDeltas(rebuiltLayers, after);
+    }
     if (replacementOverrides === undefined && rebuiltLayers.length > 1) {
       throw new PuppetLoomError(
         "INVALID_INPUT",
@@ -273,10 +313,10 @@ async function commitCalibrationPatch(root: string, patch: CalibrationPatch, rep
     await atomicJson(operationFile, operation);
 
     const evidence = await (await import("./render-suite.js")).compareProjectStates(
-      root, before, after, current.revision, revision, evidenceDirectory, patch.authoring?.previews ?? []
+      root, before, after, current.revision, revision, evidenceDirectory, patch.authoring?.previews ?? [], options
     );
     const neutralMeshDifference = replacementOverrides === undefined && rebuiltLayers.length === 1
-      ? await (await import("./render-suite.js")).compareNeutralProjectStates(root, before, after, evidenceDirectory)
+      ? await (await import("./render-suite.js")).compareNeutralProjectStates(root, before, after, evidenceDirectory, options)
       : undefined;
     if (neutralMeshDifference
       && (neutralMeshDifference.significantPixelRatio > 0.02 || neutralMeshDifference.meanAbsoluteDifference > 0.0015)) {
@@ -349,17 +389,25 @@ async function commitCalibrationPatch(root: string, patch: CalibrationPatch, rep
   }
 }
 
-export async function saveCalibrationPatch(projectDirectory: string, rawPatch: CalibrationPatch): Promise<CalibrationSaveResult> {
+export async function saveCalibrationPatch(
+  projectDirectory: string,
+  rawPatch: CalibrationPatch,
+  options: CalibrationSaveOptions = {}
+): Promise<CalibrationSaveResult> {
   let patch: CalibrationPatch;
   try {
     patch = calibrationPatchSchema.parse(rawPatch) as CalibrationPatch;
   } catch (error) {
     throw new PuppetLoomError("INVALID_INPUT", "校准补丁格式无效。", { cause: error });
   }
-  return commitCalibrationPatch(resolve(projectDirectory), patch);
+  return commitCalibrationPatch(resolve(projectDirectory), patch, undefined, options);
 }
 
-export async function saveAuthoringPatch(projectDirectory: string, rawPatch: AuthoringPatch): Promise<CalibrationSaveResult> {
+export async function saveAuthoringPatch(
+  projectDirectory: string,
+  rawPatch: AuthoringPatch,
+  options: CalibrationSaveOptions = {}
+): Promise<CalibrationSaveResult> {
   let patch: AuthoringPatch;
   try {
     patch = authoringPatchSchema.parse(rawPatch) as AuthoringPatch;
@@ -367,7 +415,9 @@ export async function saveAuthoringPatch(projectDirectory: string, rawPatch: Aut
     throw new PuppetLoomError("INVALID_INPUT", "Authoring 补丁格式无效。", { cause: error });
   }
   const root = resolve(projectDirectory);
-  const [before, calibration] = await Promise.all([loadProject(root), loadCalibration(root)]);
+  const { project: base, hash } = await readBaseProject(root);
+  const calibration = await readCalibrationDocument(root, hash);
+  const before = applyStoredCalibration(base, calibration, root);
   if (patch.baseRevision !== calibration.revision) {
     throw new PuppetLoomError("REVISION_CONFLICT", `Authoring 基线已从 ${patch.baseRevision} 更新到 ${calibration.revision}，本次修改没有写入。`);
   }
@@ -381,13 +431,14 @@ export async function saveAuthoringPatch(projectDirectory: string, rawPatch: Aut
   const audit = buildAuthoringAudit(patch, before, after);
   return saveCalibrationPatch(root, {
     baseRevision: patch.baseRevision,
+    expectedBaseProjectSha256: hash,
     ...(patch.label ? { label: patch.label } : {}),
     overrides: {
       model: after.model,
       ...(Object.keys(layerOverrides).length > 0 ? { layers: layerOverrides } : {})
     },
     authoring: audit
-  });
+  }, options);
 }
 
 export async function listCalibrationSessions(projectDirectory: string): Promise<CalibrationSessionDocument[]> {
@@ -588,11 +639,17 @@ export async function setCalibrationEvidenceStatus(
   }
 }
 
-export async function restoreCalibrationRevision(projectDirectory: string, revision: number, baseRevision: number, label?: string): Promise<CalibrationSaveResult> {
+export async function restoreCalibrationRevision(
+  projectDirectory: string,
+  revision: number,
+  baseRevision: number,
+  label?: string,
+  options: CalibrationSaveOptions = {}
+): Promise<CalibrationSaveResult> {
   if (!Number.isInteger(revision) || revision < 0) throw new PuppetLoomError("INVALID_INPUT", "校准修订号必须是非负整数。" );
   const sessions = await listCalibrationSessions(projectDirectory);
   const overrides = revision === 0 ? {} : sessions.find((session) => session.toRevision === revision)?.afterOverrides;
   if (!overrides) throw new PuppetLoomError("INVALID_INPUT", `找不到校准修订 ${revision}。`);
   const resetPatch: CalibrationPatch = { baseRevision, label: label ?? `恢复到校准 ${revision}`, overrides };
-  return commitCalibrationPatch(resolve(projectDirectory), resetPatch, overrides);
+  return commitCalibrationPatch(resolve(projectDirectory), resetPatch, overrides, options);
 }

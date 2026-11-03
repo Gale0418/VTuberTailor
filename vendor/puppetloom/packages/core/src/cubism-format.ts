@@ -295,7 +295,7 @@ function buildPhysics(project: PuppetLoomProject, mappings: CubismParameterMappi
     settings.push({
       Id: `PhysicsSettingPuppetLoom${safeFileId(physics.id)}`,
       Input: input.targetIds.map((id) => ({ Source: { Target: "Parameter", Id: id }, Weight: 100, Type: "X", Reflect: false })),
-      Output: output.targetIds.map((id) => ({ Destination: { Target: "Parameter", Id: id }, VertexIndex: 1, Scale: finite(physics.outputScale), Weight: 100, Type: "X", Reflect: false })),
+      Output: output.targetIds.map((id) => ({ Destination: { Target: "Parameter", Id: id }, VertexIndex: 1, Scale: finite(physics.outputScale), Weight: 100, Type: "Angle", Reflect: false })),
       Vertices: [
         { Position: { X: 0, Y: 0 }, Mobility: 0, Delay: 0, Acceleration: 0, Radius: 0 },
         { Position: { X: 0, Y: 1 }, Mobility: finite(clamp(physics.response / 30, 0.05, 1)), Delay: finite(clamp(physics.damping / 10, 0, 1)), Acceleration: finite(clamp(Math.abs(physics.inputScale), 0.1, 4)), Radius: 1 }
@@ -324,9 +324,35 @@ function buildPhysics(project: PuppetLoomProject, mappings: CubismParameterMappi
 function buildDisplayInfo(mappings: CubismParameterMapping[]): CubismDisplayInfoJson {
   const groups = [...new Set(mappings.map((mapping) => mapping.sourceGroup))];
   const groupIds = new Map(groups.map((group) => [group, `GroupPuppetLoom${pascalIdentifier(group)}`]));
+  const parameters = new Map<string, {
+    parameter: { Id: string; GroupId: string; Name: string };
+    targetCount: number;
+    tieBreak: string;
+  }>();
+  for (const mapping of mappings) {
+    for (const id of mapping.targetIds) {
+      // A global parameter can intentionally share Cubism IDs with a more
+      // specific mapping (for example, blink with blink-left/right). Keep one
+      // CDI entry per ID and prefer the mapping with fewer targets, since a
+      // single-target mapping is the more specific side-specific control. If
+      // target counts tie, prefer side-specific blink semantics and then a
+      // stable source identity so input order cannot change the display name.
+      const targetCount = mapping.targetIds.length;
+      const semanticPriority = mapping.semantic === "blink-left" || mapping.semantic === "blink-right" ? 0 : mapping.semantic === "blink" ? 1 : 2;
+      const tieBreak = `${semanticPriority}\u0000${mapping.sourceId}\u0000${mapping.sourceGroup}\u0000${mapping.sourceName}`;
+      const current = parameters.get(id);
+      if (!current || targetCount < current.targetCount || (targetCount === current.targetCount && tieBreak < current.tieBreak)) {
+        parameters.set(id, {
+          parameter: { Id: id, GroupId: groupIds.get(mapping.sourceGroup)!, Name: mapping.sourceName },
+          targetCount,
+          tieBreak
+        });
+      }
+    }
+  }
   return {
     Version: 3,
-    Parameters: mappings.flatMap((mapping) => mapping.targetIds.map((id) => ({ Id: id, GroupId: groupIds.get(mapping.sourceGroup)!, Name: mapping.sourceName }))),
+    Parameters: [...parameters.values()].map(({ parameter }) => parameter),
     ParameterGroups: groups.map((group) => ({ Id: groupIds.get(group)!, GroupId: "", Name: group })),
     Parts: []
   };
