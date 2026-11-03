@@ -8,12 +8,14 @@
 
 從一張角色圖出發，透過 AI 重繪與補件、透明素材拆層、像素對位、綁定及疊圖驗收，逐步製作出可動 V 皮。這次案例也另外生成大頭照，作為臉部神韻與頭髮細節的參考，再整理成 VTube Studio 模型套件。
 
-| 透明全身來源參考 | 大頭照與臉部基準 | 完成品 r32 |
+| 透明全身來源參考 | 大頭照與臉部基準 | 早期測試版 r32 |
 | --- | --- | --- |
 | <img src="assets/examples/source-reference-transparent.png" alt="銀髮貓娘透明全身來源參考" height="320"> | <img src="assets/examples/approved-portrait.png" alt="批准的大頭照，作為五官與髮型參考" height="320"> | <img src="assets/examples/finished-r32.png" alt="r32 模型的官方 Core 與 atlas 離線渲染" height="320"> |
 | 最初分層專案保留的透明合成參考圖。 | 重繪後確認的造型與臉部錨點。 | 由官方 Core 幾何讀回與匯出貼圖渲染，非 VTS 視窗截圖。 |
 
 以上三張展示圖由使用者明確指定公開，原像素未重繪或修飾；完整角色專案與個人 VTS 設定仍留在本機。來源與 SHA-256 見 [assets/examples](assets/examples/README.md)。
+
+r32 是早期測試結果；後續 VTube Studio 實測仍發現頭部、五官與髮絲連動及頸部接縫問題，修復與真人追蹤驗收仍在進行。離線渲染圖不能證明角色動作已完成。
 
 ## 本機準備（Windows）
 
@@ -51,6 +53,8 @@ npm 優先從指定 Node 的同目錄尋找，再查 PATH；自訂安裝可另�
 
 傳給 `engine` 的專案／輸入／輸出請用絕對路徑，因引擎命令以 vendor 目錄為工作目錄。各工具的 `--help` 列出精確參數；`register` 是 `engine assets register` 的簡寫。
 
+本機另有試驗性的 model3/moc3 靜態預覽入口：使用者自行準備已核驗的 PurismCore Web runtime，執行 `node scripts/purism-preview/server.mjs --runtime-root <runtime 目錄>`，再開啟輸出的 localhost 網址。也可選擇用整合入口把連結加入 Anime2.5DRig 的程式快照；原始頁面及 VTS 不會被自動修改。模型物理、動作與攝影機追蹤未在此入口驗證。準備方式、安全邊界及已知限制見 [references/purism-preview.md](references/purism-preview.md)。
+
 固定 frame 的疊圖用來揭露差異，不會自動把眼睛局部拉伸到「看起來符合」。透明像素任意 RGB 不當作可見缺陷；亮膚色也不應因色差門檻被挖成透明洞。生圖／Python 編修依當次使用者授權選擇，Skill 不攜帶其他角色過去的永久授權。
 
 ## 驗證與資料
@@ -79,5 +83,7 @@ npm 優先從指定 Node 的同目錄尋找，再查 PATH；自訂安裝可另�
 本輪維護狀態以 [MissionCenter/tasks.md](MissionCenter/tasks.md) 為準。外部審查先用相同程式碼的隔離副本排除私有資料、素材、生成物與鎖檔，每輪最多 150 檔、每小時最多 3 次；審查意見經本機查證後才修正。
 
 [2026-10-26 CodeRabbit 紀錄](references/code-review-2026-10-26.md)：兩輪共審查 150 檔來源範圍及 15 檔修補 diff，10 項問題修正、1 項以反證拒絕，並完成整合建置與搬移匯出驗證。
+
+2026-11-03 另完成一次針對 46 個程式／測試檔的 CodeRabbit 審查，2 項問題（`relay-info` 雙斜線與 Windows `tmpdir`）均已修正。當前 Node 測試為 80 pass／12 skip，calibration overrides 為 19/19；這批結果使用 Node 22，非專案宣告版本的正式驗證。macOS 執行 `test.ps1 -Engine` 會因 Windows Python runtime 失敗，系統 Python 3.9 亦缺少 NumPy；以 Python 3.11 搭配既有、非 lock 精確版本的 cache 依賴所做 image QA 與 archive smoke 分別為 7/7、4/4。已核驗 runtime 的 synthetic editor integration 實際 14/14 pass、0 skip，但不代表 VTS／實機驗收；其他完整驗收仍待執行，尚不宣稱整體通過。
 
 引擎測試有 Windows 路徑長度預算；包裝腳本使用較短的 runtime 產物根目錄，必要時改用系統 temp。也可明確設定 `PUPPETLOOM_ARTIFACT_ROOT` 為較短路徑，不會放寬原有長度或安全門檻。

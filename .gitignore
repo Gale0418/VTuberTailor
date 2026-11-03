@@ -14,3 +14,7 @@ artifacts/
 Thumbs.db
 node_modules/
 dist/
+/output/mission-center-runtime/
+/MissionCenter/.mission-center/operations/
+/vendor/puppetloom/D:/
+/vendor/puppetloom/skills/live2d-puppet/assets/blue-whale-maid-reference/
