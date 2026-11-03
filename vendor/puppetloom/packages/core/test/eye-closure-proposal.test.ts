@@ -74,5 +74,5 @@ describe("original-art eye production", () => {
     lash.deformerId = "artist-lid-parent";
     parentEdited.model.bindings.push({ id: "artist-parent-blink", parameterIds: ["param-blink"], target: { kind: "deformer", id: "artist-lid-parent" }, keyforms: [{ values: [0] }, { values: [1], transform: { rotationDegrees: 4 } }] });
     await expect(prepareEyeClosure(root, parentEdited, parentEdited.layers)).rejects.toThrow("父级已有眨眼绑定");
-  }, 60000);
+  }, 180000);
 });

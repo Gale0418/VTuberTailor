@@ -86,4 +86,6 @@ npm 優先從指定 Node 的同目錄尋找，再查 PATH；自訂安裝可另�
 
 2026-11-03 另完成一次針對 46 個程式／測試檔的 CodeRabbit 審查，2 項問題（`relay-info` 雙斜線與 Windows `tmpdir`）均已修正。當前 Node 測試為 80 pass／12 skip，calibration overrides 為 19/19；這批結果使用 Node 22，非專案宣告版本的正式驗證。macOS 執行 `test.ps1 -Engine` 會因 Windows Python runtime 失敗，系統 Python 3.9 亦缺少 NumPy；以 Python 3.11 搭配既有、非 lock 精確版本的 cache 依賴所做 image QA 與 archive smoke 分別為 7/7、4/4。已核驗 runtime 的 synthetic editor integration 實際 14/14 pass、0 skip，但不代表 VTS／實機驗收；其他完整驗收仍待執行，尚不宣稱整體通過。
 
+2026-11-03 engine suite（Mac／Node 22）更新：原始 suite 為 53/56 test files、372/379 tests 通過；3 項缺 Windows 指定 `Java.exe`、3 項需要 Windows Photoshop COM，原始 60 秒測試仍不通過。依 111 秒實測，正式專案 `vendor/puppetloom/packages/core/test/eye-closure-proposal.test.ts` 的個別上限已由 60 調至 180 秒；獨立診斷副本該測項 1/1 通過、耗時約 111 秒，其餘來源相同。正式測試尚未完整重跑，原 suite 結果不變，不能標成全過。
+
 引擎測試有 Windows 路徑長度預算；包裝腳本使用較短的 runtime 產物根目錄，必要時改用系統 temp。也可明確設定 `PUPPETLOOM_ARTIFACT_ROOT` 為較短路徑，不會放寬原有長度或安全門檻。
