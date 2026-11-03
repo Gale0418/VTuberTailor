@@ -1,9 +1,9 @@
 <!-- Generated materialized view. Do not edit directly; rebuild from canonical MissionCenter files. -->
-<!-- mission-center-derived schema=1.0 fingerprint-format=sha256-v2-lf source-fingerprint=757a76a584d6e5080da0ca6d4859bc13d4b775473dbdc8207c6581ef684d145b -->
+<!-- mission-center-derived schema=1.0 fingerprint-format=sha256-v2-lf source-fingerprint=753cb8ca6134193b7d1d6d615a83b55fa6a60b179de9311f1f96da50e0fa26b9 -->
 # 任務簡報
 
 - 最後整理: 2026-11-04
-- 來源指紋: `757a76a584d6e5080da0ca6d4859bc13d4b775473dbdc8207c6581ef684d145b`
+- 來源指紋: `753cb8ca6134193b7d1d6d615a83b55fa6a60b179de9311f1f96da50e0fa26b9`
 - 唯一真實來源: `tasks.md`
 - 專案: MissionCenter
 - 北極星: MissionCenter workspace
