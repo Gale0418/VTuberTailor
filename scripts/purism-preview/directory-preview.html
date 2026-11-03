@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>本機 PurismCore model3/moc3 預覽</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.45 system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #17171d; color: #eeeef2; }
+    header { display: grid; gap: 8px; padding: 12px 16px; background: #24242d; border-bottom: 1px solid #3a3a46; }
+    h1 { margin: 0; font-size: 17px; }
+    p { margin: 0; color: #b9b9c5; }
+    button { width: fit-content; border: 0; border-radius: 6px; padding: 8px 14px; background: #3a6df0; color: white; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #status { min-height: 1.4em; color: #f0cf73; }
+    #pending { min-height: 1.4em; color: #b9b9c5; }
+    iframe { display: block; width: 100%; height: calc(100vh - 190px); min-height: 420px; border: 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>本機 PurismCore model3/moc3 預覽</h1>
+    <p>只處理本機檔案；不支援 ZIP、不接受 model URL、不上傳模型。目錄入口保留相對路徑；fallback 可分批選取檔案。</p>
+    <input id="directory" type="file" webkitdirectory directory multiple hidden>
+    <input id="files" type="file" multiple accept=".model3.json,.moc3,.png,.jpg,.jpeg,.cdi3.json,.physics3.json,.userdata3.json,.motion3.json,.exp3.json,.pose3.json,.vtube.json,.prprl2d.json,.live.json" hidden>
+    <button id="choose-directory" type="button">選擇本機模型目錄</button>
+    <button id="choose-files" type="button">分批選擇 model3 與相關檔案</button>
+    <div id="pending" role="status" aria-live="polite">尚未累積 fallback 檔案</div>
+    <button id="load-files" type="button" disabled>載入已選檔案</button>
+    <button id="clear-files" type="button" disabled>清空已選檔案</button>
+    <div id="status" role="status" aria-live="polite">正在隔離 viewer…</div>
+  </header>
+  <iframe id="viewer" title="PurismCore model3/moc3 viewer" sandbox="allow-scripts allow-same-origin" src="./runtime/purism-viewer.html"></iframe>
+  <script type="module" src="./client.mjs"></script>
+</body>
+</html>
